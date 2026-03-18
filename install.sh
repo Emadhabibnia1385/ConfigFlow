@@ -4,6 +4,7 @@ REPO="https://github.com/Emadhabibnia1385/ConfigFlow.git"
 DIR="/opt/configflow"
 SERVICE="configflow"
 PY_FILE="bot.py"
+BRANCH="main"
 
 R='\033[31m'; G='\033[32m'; Y='\033[33m'; C='\033[36m'; M='\033[35m'; B='\033[1m'; N='\033[0m'
 
@@ -26,10 +27,15 @@ header() {
   echo ""
 }
 
-err() { echo -e "${R}✗ $*${N}" >&2; echo ""; read -p "Press Enter to continue..." _; return 1; }
+err() {
+  echo -e "${R}✗ $*${N}" >&2
+  echo ""
+  read -p "Press Enter to continue..." _
+  return 1
+}
+
 ok()  { echo -e "${G}✓ $*${N}"; }
 info(){ echo -e "${Y}➜ $*${N}"; }
-
 pause() { echo ""; read -p "Press Enter to continue..." _; }
 
 check_root() {
@@ -51,6 +57,10 @@ detect_py_file() {
     return 1
   fi
   return 0
+}
+
+validate_repo_access() {
+  git ls-remote --heads "$REPO" "$BRANCH" >/dev/null 2>&1
 }
 
 ask_config() {
@@ -93,6 +103,7 @@ EnvironmentFile=$DIR/.env
 ExecStart=$DIR/venv/bin/python $DIR/$PY_FILE
 Restart=always
 RestartSec=5
+User=root
 
 [Install]
 WantedBy=multi-user.target
@@ -107,34 +118,38 @@ EOF
 install_bot() {
   info "Installing prerequisites..."
   run_silent apt-get update -qq || { err "apt update failed"; return 1; }
-  run_silent apt-get install -y -qq git python3 python3-venv python3-pip sqlite3 curl || { err "apt install failed"; return 1; }
+  run_silent apt-get install -y -qq git python3 python3-venv python3-pip sqlite3 curl ca-certificates || { err "apt install failed"; return 1; }
+
+  info "Checking GitHub repository access..."
+  validate_repo_access || { err "Cannot access repository or branch: $REPO [$BRANCH]. Make sure the repository is public and the branch exists."; return 1; }
 
   info "Downloading ConfigFlow..."
   if [[ -d "$DIR/.git" ]]; then
-    (cd "$DIR" && run_silent git pull -q) || { err "git pull failed"; return 1; }
+    (cd "$DIR" && git fetch origin "$BRANCH" && git reset --hard "origin/$BRANCH") >/dev/null 2>&1 || { err "git update failed"; return 1; }
   else
-    run_silent rm -rf "$DIR"
-    run_silent git clone -q "$REPO" "$DIR" || { err "git clone failed. Please edit REPO inside install.sh first."; return 1; }
+    rm -rf "$DIR"
+    git clone --branch "$BRANCH" --single-branch "$REPO" "$DIR" || { err "git clone failed. Repository may be private or unreachable."; return 1; }
   fi
 
   detect_py_file || return 1
 
   info "Setting up Python environment..."
   if [[ ! -d "$DIR/venv" ]]; then
-    run_silent python3 -m venv "$DIR/venv" || { err "venv create failed"; return 1; }
+    python3 -m venv "$DIR/venv" >/dev/null 2>&1 || { err "venv create failed"; return 1; }
   fi
 
-  run_silent "$DIR/venv/bin/pip" install --upgrade pip wheel || { err "pip upgrade failed"; return 1; }
+  info "Upgrading pip..."
+  "$DIR/venv/bin/pip" install --upgrade pip wheel || { err "pip upgrade failed"; return 1; }
 
   info "Installing requirements..."
   if [[ -f "$DIR/requirements.txt" ]]; then
-    run_silent "$DIR/venv/bin/pip" install -r "$DIR/requirements.txt" || { err "requirements install failed"; return 1; }
+    "$DIR/venv/bin/pip" install -r "$DIR/requirements.txt" || { err "requirements install failed"; return 1; }
   else
-    run_silent "$DIR/venv/bin/pip" install pyTelegramBotAPI qrcode pillow python-dotenv || { err "pip install failed"; return 1; }
+    "$DIR/venv/bin/pip" install pyTelegramBotAPI qrcode pillow python-dotenv || { err "pip install failed"; return 1; }
   fi
 
   header
-  ok "Packages downloaded & installed successfully!"
+  ok "Packages downloaded and installed successfully!"
   echo ""
 
   ask_config || return 1
@@ -153,13 +168,15 @@ update_bot() {
   info "Updating ConfigFlow from GitHub..."
   [[ -d "$DIR/.git" ]] || { err "Not installed. Install first."; return 1; }
 
-  (cd "$DIR" && run_silent git pull -q) || { err "git pull failed"; return 1; }
+  validate_repo_access || { err "Cannot access repository or branch: $REPO [$BRANCH]"; return 1; }
+
+  (cd "$DIR" && git fetch origin "$BRANCH" && git reset --hard "origin/$BRANCH") || { err "git update failed"; return 1; }
 
   detect_py_file || return 1
 
   info "Updating requirements..."
   if [[ -f "$DIR/requirements.txt" ]]; then
-    run_silent "$DIR/venv/bin/pip" install -r "$DIR/requirements.txt" || { err "requirements update failed"; return 1; }
+    "$DIR/venv/bin/pip" install -r "$DIR/requirements.txt" || { err "requirements update failed"; return 1; }
   fi
 
   run_silent systemctl restart "$SERVICE" || { err "restart failed"; return 1; }
@@ -190,7 +207,7 @@ remove_bot() {
   run_silent systemctl disable "$SERVICE"
   run_silent rm -f "/etc/systemd/system/$SERVICE.service"
   run_silent systemctl daemon-reload
-  run_silent rm -rf "$DIR"
+  rm -rf "$DIR"
 
   header
   ok "ConfigFlow removed completely"
