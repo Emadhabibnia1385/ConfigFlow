@@ -229,6 +229,10 @@ def init_db():
             "gw_tetrapay_enabled":    "0",
             "gw_tetrapay_visibility": "public",
             "tetrapay_api_key":       "",
+            "tetrapay_mode_bot":      "1",
+            "tetrapay_mode_web":      "1",
+            "support_link":     "",
+            "support_link_desc": "",
             "channel_id":       "",
             "backup_enabled":   "0",
             "backup_interval":  "24",
@@ -300,14 +304,15 @@ def fetch_crypto_prices():
     except Exception:
         return {}
 
-def create_tetrapay_order(amount, hash_id, description="پرداخت"):
+def create_tetrapay_order(amount_toman, hash_id, description="پرداخت"):
     api_key = setting_get("tetrapay_api_key", "")
     if not api_key:
         return False, {"error": "API key not set"}
+    amount_rial = amount_toman * 10
     payload = json.dumps({
         "ApiKey": api_key,
         "Hash_id": hash_id,
-        "Amount": amount,
+        "Amount": amount_rial,
         "Description": description,
         "Email": "",
         "Mobile": "",
@@ -695,7 +700,13 @@ def check_channel_membership(user_id):
 def channel_lock_message(target):
     channel_id = setting_get("channel_id", "").strip()
     kb = types.InlineKeyboardMarkup()
-    channel_url = f"https://t.me/{channel_id.lstrip('@')}" if channel_id.startswith("@") else f"https://t.me/{channel_id}"
+    if channel_id.startswith("@"):
+        channel_url = f"https://t.me/{channel_id.lstrip('@')}"
+    elif channel_id.startswith("-100"):
+        # Numeric supergroup/channel ID: use t.me/c/xxx format
+        channel_url = f"https://t.me/c/{channel_id[4:]}"
+    else:
+        channel_url = f"https://t.me/{channel_id}"
     kb.add(types.InlineKeyboardButton("📢 عضویت در کانال", url=channel_url))
     kb.add(types.InlineKeyboardButton("✅ عضو شدم", callback_data="check_channel"))
     send_or_edit(target,
@@ -802,13 +813,30 @@ def show_profile(target, user_id):
 def show_support(target):
     support_raw = setting_get("support_username", DEFAULT_ADMIN_HANDLE)
     support_url = safe_support_url(support_raw)
+    support_link = setting_get("support_link", "")
+    support_link_desc = setting_get("support_link_desc", "")
+
+    kb = types.InlineKeyboardMarkup()
+    has_any = False
     if support_url:
-        kb = types.InlineKeyboardMarkup()
-        kb.add(types.InlineKeyboardButton("💬 ورود به گفت‌وگوی پشتیبانی", url=support_url))
-        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
-        send_or_edit(target, "🎧 <b>ارتباط با پشتیبانی</b>\n\nبرای گفت‌وگو با پشتیبانی روی دکمه زیر بزنید.", kb)
-    else:
+        kb.add(types.InlineKeyboardButton("💬 پشتیبانی تلگرام", url=support_url))
+        has_any = True
+    if support_link:
+        btn_text = "🌐 پشتیبانی آنلاین"
+        kb.add(types.InlineKeyboardButton(btn_text, url=support_link))
+        has_any = True
+    kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
+
+    if not has_any:
         send_or_edit(target, "⚠️ پشتیبانی هنوز تنظیم نشده است.", back_button("main"))
+        return
+
+    text = "🎧 <b>ارتباط با پشتیبانی</b>\n\n"
+    if support_link_desc:
+        text += f"{esc(support_link_desc)}\n\n"
+    else:
+        text += "از طریق یکی از روش‌های زیر با ما در ارتباط باشید.\n\n"
+    send_or_edit(target, text, kb)
 
 def show_my_configs(target, user_id):
     items = get_user_purchases(user_id)
@@ -1358,9 +1386,9 @@ def _dispatch_callback(call, uid, data):
             "پس از پرداخت، دکمه «✅ بررسی پرداخت» را بزنید."
         )
         kb = types.InlineKeyboardMarkup()
-        if pay_url_bot:
+        if pay_url_bot and setting_get("tetrapay_mode_bot", "1") == "1":
             kb.add(types.InlineKeyboardButton("💳 پرداخت در تلگرام", url=pay_url_bot))
-        if pay_url_web:
+        if pay_url_web and setting_get("tetrapay_mode_web", "1") == "1":
             kb.add(types.InlineKeyboardButton("🌐 پرداخت در مرورگر", url=pay_url_web))
         kb.add(types.InlineKeyboardButton("✅ بررسی پرداخت", callback_data=f"pay:tetrapay:verify:{payment_id}"))
         kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
@@ -1476,9 +1504,9 @@ def _dispatch_callback(call, uid, data):
             "پس از پرداخت، دکمه «✅ بررسی پرداخت» را بزنید."
         )
         kb = types.InlineKeyboardMarkup()
-        if pay_url_bot:
+        if pay_url_bot and setting_get("tetrapay_mode_bot", "1") == "1":
             kb.add(types.InlineKeyboardButton("💳 پرداخت در تلگرام", url=pay_url_bot))
-        if pay_url_web:
+        if pay_url_web and setting_get("tetrapay_mode_web", "1") == "1":
             kb.add(types.InlineKeyboardButton("🌐 پرداخت در مرورگر", url=pay_url_web))
         kb.add(types.InlineKeyboardButton("✅ بررسی پرداخت", callback_data=f"pay:tetrapay:verify:{payment_id}"))
         kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
@@ -1917,10 +1945,45 @@ def _dispatch_callback(call, uid, data):
         return
 
     if data == "adm:set:support":
+        support_raw = setting_get("support_username", "")
+        support_link = setting_get("support_link", "")
+        support_link_desc = setting_get("support_link_desc", "")
+        kb = types.InlineKeyboardMarkup()
+        tg_status = "✅" if support_raw else "❌"
+        link_status = "✅" if support_link else "❌"
+        kb.add(types.InlineKeyboardButton(f"{tg_status} پشتیبانی تلگرام", callback_data="adm:set:support_tg"))
+        kb.add(types.InlineKeyboardButton(f"{link_status} پشتیبانی آنلاین (لینک)", callback_data="adm:set:support_link"))
+        kb.add(types.InlineKeyboardButton("✏️ توضیحات پشتیبانی", callback_data="adm:set:support_desc"))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:settings"))
+        text = (
+            "🎧 <b>تنظیمات پشتیبانی</b>\n\n"
+            f"📱 تلگرام: <code>{esc(support_raw or 'ثبت نشده')}</code>\n"
+            f"🌐 لینک: <code>{esc(support_link or 'ثبت نشده')}</code>\n"
+            f"📝 توضیحات: {esc(support_link_desc or 'پیش‌فرض')}"
+        )
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, text, kb)
+        return
+
+    if data == "adm:set:support_tg":
         state_set(uid, "admin_set_support")
         bot.answer_callback_query(call.id)
-        send_or_edit(call, "🎧 آیدی یا لینک پشتیبانی را ارسال کنید.\nمثال: <code>@username</code>",
-                     back_button("admin:settings"))
+        send_or_edit(call, "🎧 آیدی یا لینک پشتیبانی تلگرام را ارسال کنید.\nمثال: <code>@username</code>",
+                     back_button("adm:set:support"))
+        return
+
+    if data == "adm:set:support_link":
+        state_set(uid, "admin_set_support_link")
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, "🌐 لینک پشتیبانی آنلاین را ارسال کنید.\nمثال: <code>https://example.com/chat</code>\n\nبرای حذف، <code>-</code> بفرستید.",
+                     back_button("adm:set:support"))
+        return
+
+    if data == "adm:set:support_desc":
+        state_set(uid, "admin_set_support_desc")
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, "📝 توضیحات نمایشی بالای دکمه‌های پشتیبانی را بنویسید.\n\nبرای بازگشت به پیش‌فرض، <code>-</code> بفرستید.",
+                     back_button("adm:set:support"))
         return
 
     # ── Gateway settings ──────────────────────────────────────────────────────
@@ -2021,12 +2084,20 @@ def _dispatch_callback(call, uid, data):
         enabled = setting_get("gw_tetrapay_enabled", "0")
         vis = setting_get("gw_tetrapay_visibility", "public")
         api_key = setting_get("tetrapay_api_key", "")
+        mode_bot = setting_get("tetrapay_mode_bot", "1")
+        mode_web = setting_get("tetrapay_mode_web", "1")
         enabled_label = "🟢 فعال" if enabled == "1" else "🔴 غیرفعال"
         vis_label = "👥 عمومی" if vis == "public" else "🔒 کاربران امن"
+        bot_label = "🟢 فعال" if mode_bot == "1" else "🔴 غیرفعال"
+        web_label = "🟢 فعال" if mode_web == "1" else "🔴 غیرفعال"
         kb = types.InlineKeyboardMarkup()
         kb.row(
             types.InlineKeyboardButton(f"وضعیت: {enabled_label}", callback_data="adm:gw:tetrapay:toggle"),
             types.InlineKeyboardButton(f"نمایش: {vis_label}", callback_data="adm:gw:tetrapay:vis"),
+        )
+        kb.row(
+            types.InlineKeyboardButton(f"تلگرام: {bot_label}", callback_data="adm:gw:tetrapay:mode_bot"),
+            types.InlineKeyboardButton(f"مرورگر: {web_label}", callback_data="adm:gw:tetrapay:mode_web"),
         )
         kb.add(types.InlineKeyboardButton("🔑 تنظیم کلید API", callback_data="adm:set:tetrapay_key"))
         if not api_key:
@@ -2040,6 +2111,8 @@ def _dispatch_callback(call, uid, data):
             "🏦 <b>درگاه کارت به کارت آنلاین (TetraPay)</b>\n\n"
             f"وضعیت: {enabled_label}\n"
             f"نمایش: {vis_label}\n\n"
+            f"💳 پرداخت از تلگرام: {bot_label}\n"
+            f"🌐 پرداخت از مرورگر: {web_label}\n\n"
             f"کلید API: {key_display}"
         )
         bot.answer_callback_query(call.id)
@@ -2056,6 +2129,20 @@ def _dispatch_callback(call, uid, data):
     if data == "adm:gw:tetrapay:vis":
         vis = setting_get("gw_tetrapay_visibility", "public")
         setting_set("gw_tetrapay_visibility", "secure" if vis == "public" else "public")
+        bot.answer_callback_query(call.id, "تغییر یافت.")
+        _fake_call(call, "adm:set:gw:tetrapay")
+        return
+
+    if data == "adm:gw:tetrapay:mode_bot":
+        cur = setting_get("tetrapay_mode_bot", "1")
+        setting_set("tetrapay_mode_bot", "0" if cur == "1" else "1")
+        bot.answer_callback_query(call.id, "تغییر یافت.")
+        _fake_call(call, "adm:set:gw:tetrapay")
+        return
+
+    if data == "adm:gw:tetrapay:mode_web":
+        cur = setting_get("tetrapay_mode_web", "1")
+        setting_set("tetrapay_mode_web", "0" if cur == "1" else "1")
         bot.answer_callback_query(call.id, "تغییر یافت.")
         _fake_call(call, "adm:set:gw:tetrapay")
         return
@@ -2569,25 +2656,39 @@ def universal_handler(message):
         if sn == "admin_set_support" and is_admin(uid):
             setting_set("support_username", (message.text or "").strip())
             state_clear(uid)
-            bot.send_message(uid, "✅ آیدی پشتیبانی ذخیره شد.", reply_markup=kb_admin_panel())
+            bot.send_message(uid, "✅ آیدی پشتیبانی ذخیره شد.", reply_markup=back_button("adm:set:support"))
+            return
+
+        if sn == "admin_set_support_link" and is_admin(uid):
+            val = (message.text or "").strip()
+            setting_set("support_link", "" if val == "-" else val)
+            state_clear(uid)
+            bot.send_message(uid, "✅ لینک پشتیبانی ذخیره شد.", reply_markup=back_button("adm:set:support"))
+            return
+
+        if sn == "admin_set_support_desc" and is_admin(uid):
+            val = (message.text or "").strip()
+            setting_set("support_link_desc", "" if val == "-" else val)
+            state_clear(uid)
+            bot.send_message(uid, "✅ توضیحات پشتیبانی ذخیره شد.", reply_markup=back_button("adm:set:support"))
             return
 
         if sn == "admin_set_card" and is_admin(uid):
             setting_set("payment_card", normalize_text_number(message.text or ""))
             state_clear(uid)
-            bot.send_message(uid, "✅ شماره کارت ذخیره شد.", reply_markup=kb_admin_panel())
+            bot.send_message(uid, "✅ شماره کارت ذخیره شد.", reply_markup=back_button("adm:set:gw:card"))
             return
 
         if sn == "admin_set_bank" and is_admin(uid):
             setting_set("payment_bank", (message.text or "").strip())
             state_clear(uid)
-            bot.send_message(uid, "✅ نام بانک ذخیره شد.", reply_markup=kb_admin_panel())
+            bot.send_message(uid, "✅ نام بانک ذخیره شد.", reply_markup=back_button("adm:set:gw:card"))
             return
 
         if sn == "admin_set_owner" and is_admin(uid):
             setting_set("payment_owner", (message.text or "").strip())
             state_clear(uid)
-            bot.send_message(uid, "✅ نام صاحب کارت ذخیره شد.", reply_markup=kb_admin_panel())
+            bot.send_message(uid, "✅ نام صاحب کارت ذخیره شد.", reply_markup=back_button("adm:set:gw:card"))
             return
 
         if sn == "admin_set_crypto_wallet" and is_admin(uid):
@@ -2595,21 +2696,21 @@ def universal_handler(message):
             val      = (message.text or "").strip()
             setting_set(f"crypto_{coin_key}", "" if val == "-" else val)
             state_clear(uid)
-            bot.send_message(uid, "✅ آدرس ولت ذخیره شد.", reply_markup=kb_admin_panel())
+            bot.send_message(uid, "✅ آدرس ولت ذخیره شد.", reply_markup=back_button("adm:set:gw:crypto"))
             return
 
         if sn == "admin_set_tetrapay_key" and is_admin(uid):
             val = (message.text or "").strip()
             setting_set("tetrapay_api_key", val)
             state_clear(uid)
-            bot.send_message(uid, "✅ کلید API تتراپی ذخیره شد.", reply_markup=kb_admin_panel())
+            bot.send_message(uid, "✅ کلید API تتراپی ذخیره شد.", reply_markup=back_button("adm:set:gw:tetrapay"))
             return
 
         if sn == "admin_set_channel" and is_admin(uid):
             val = (message.text or "").strip()
             setting_set("channel_id", "" if val == "-" else val)
             state_clear(uid)
-            bot.send_message(uid, "✅ کانال ذخیره شد.", reply_markup=kb_admin_panel())
+            bot.send_message(uid, "✅ کانال ذخیره شد.", reply_markup=back_button("admin:settings"))
             return
 
         # ── Admin: Backup settings ─────────────────────────────────────────────
@@ -2620,14 +2721,14 @@ def universal_handler(message):
                 return
             setting_set("backup_interval", str(val))
             state_clear(uid)
-            bot.send_message(uid, f"✅ بازه بکاپ به {val} ساعت تنظیم شد.", reply_markup=kb_admin_panel())
+            bot.send_message(uid, f"✅ بازه بکاپ به {val} ساعت تنظیم شد.", reply_markup=back_button("admin:backup"))
             return
 
         if sn == "admin_set_backup_target" and is_admin(uid):
             val = (message.text or "").strip()
             setting_set("backup_target_id", val)
             state_clear(uid)
-            bot.send_message(uid, "✅ مقصد بکاپ ذخیره شد.", reply_markup=kb_admin_panel())
+            bot.send_message(uid, "✅ مقصد بکاپ ذخیره شد.", reply_markup=back_button("admin:backup"))
             return
 
         # ── Admin: Balance edit ────────────────────────────────────────────────
