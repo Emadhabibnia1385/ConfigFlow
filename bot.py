@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-TracklessVPN Telegram Bot  – v4
+ConfigFlow Telegram Bot  – v4
 Requirements:
     pip install pyTelegramBotAPI qrcode pillow python-dotenv
 Run:
@@ -30,10 +30,10 @@ load_dotenv()
 # ── Constants ──────────────────────────────────────────────────────────────────
 BOT_TOKEN  = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_IDS  = {int(x) for x in os.getenv("ADMIN_IDS","").split(",") if x.strip().isdigit()}
-DB_NAME    = os.getenv("DB_NAME", "meli_trackless.db")
+DB_NAME    = os.getenv("DB_NAME", "configflow.db")
 
-BRAND_TITLE          = "TracklessVPN"
-DEFAULT_ADMIN_HANDLE = "@Tracklessvpnadmin"
+BRAND_TITLE          = "ConfigFlow"
+DEFAULT_ADMIN_HANDLE = ""
 CRYPTO_PRICES_API    = "https://sarfe.erfjab.com/api/prices"
 TETRAPAY_CREATE_URL  = "https://tetra98.com/api/create_order"
 TETRAPAY_VERIFY_URL  = "https://tetra98.com/api/verify"
@@ -145,7 +145,7 @@ def init_db():
                 joined_at    TEXT    NOT NULL,
                 last_seen_at TEXT    NOT NULL,
                 first_start_notified INTEGER NOT NULL DEFAULT 0,
-                status       TEXT    NOT NULL DEFAULT 'safe',
+                status       TEXT    NOT NULL DEFAULT 'unsafe',
                 is_agent     INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS config_types (
@@ -233,6 +233,7 @@ def init_db():
             "tetrapay_mode_web":      "1",
             "support_link":     "",
             "support_link_desc": "",
+            "start_text":       "",
             "channel_id":       "",
             "backup_enabled":   "0",
             "backup_interval":  "24",
@@ -368,7 +369,7 @@ def ensure_user(tg_user):
             return False
         conn.execute(
             "INSERT INTO users(user_id,full_name,username,joined_at,last_seen_at,first_start_notified,status,is_agent)"
-            " VALUES(?,?,?,?,?,0,'safe',0)",
+            " VALUES(?,?,?,?,?,0,'unsafe',0)",
             (uid, full_name, username, now_str(), now_str())
         )
         return True
@@ -774,19 +775,23 @@ def kb_admin_panel():
         types.InlineKeyboardButton("👥 مدیریت کاربران",   callback_data="admin:users"),
         types.InlineKeyboardButton("📣 فوروارد همگانی",   callback_data="admin:broadcast"),
     )
-    kb.row(
-        types.InlineKeyboardButton("⚙️ تنظیمات",          callback_data="admin:settings"),
-        types.InlineKeyboardButton("💾 بکاپ",              callback_data="admin:backup"),
-    )
+    kb.add(types.InlineKeyboardButton("⚙️ تنظیمات",          callback_data="admin:settings"))
     kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
     return kb
 
 def show_main_menu(target):
     uid = target.from_user.id if hasattr(target, "from_user") else target.chat.id
-    text = (
-        f"🌟 <b>به {BRAND_TITLE} خوش آمدید</b>\n\n"
-        "لطفاً از منوی زیر بخش مورد نظر خود را انتخاب کنید."
-    )
+    custom_text = setting_get("start_text", "")
+    if custom_text:
+        text = custom_text
+    else:
+        text = (
+            f"✨ <b>به فروشگاه {BRAND_TITLE} خوش آمدید!</b>\n\n"
+            "🛡 ارائه انواع سرویس‌های VPN با کیفیت عالی\n"
+            "✅ تضمین امنیت ارتباطات شما\n"
+            "📞 پشتیبانی حرفه‌ای ۲۴ ساعته\n\n"
+            "از منوی زیر بخش مورد نظر خود را انتخاب کنید."
+        )
     send_or_edit(target, text, kb_main(uid))
 
 def show_profile(target, user_id):
@@ -1139,28 +1144,35 @@ def _dispatch_callback(call, uid, data):
     if data == "buy:start":
         items = get_all_types()
         kb = types.InlineKeyboardMarkup()
+        has_any = False
         for item in items:
-            kb.add(types.InlineKeyboardButton(f"🧩 {item['name']}", callback_data=f"buy:t:{item['id']}"))
+            # Only show types that have at least one package with stock
+            packs = [p for p in get_packages(type_id=item['id']) if p['price'] > 0 and p['stock'] > 0]
+            if packs:
+                kb.add(types.InlineKeyboardButton(f"🧩 {item['name']}", callback_data=f"buy:t:{item['id']}"))
+                has_any = True
         kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
         bot.answer_callback_query(call.id)
-        send_or_edit(call, "🛒 <b>خرید کانفیگ جدید</b>\n\nنوع مورد نظر را انتخاب کنید:", kb)
+        if not has_any:
+            send_or_edit(call, "📭 در حال حاضر بسته‌ای برای فروش موجود نیست.", kb)
+        else:
+            send_or_edit(call, "🛒 <b>خرید کانفیگ جدید</b>\n\nنوع مورد نظر را انتخاب کنید:", kb)
         return
 
     if data.startswith("buy:t:"):
         type_id  = int(data.split(":")[2])
-        packages = [p for p in get_packages(type_id=type_id) if p["price"] > 0]
+        packages = [p for p in get_packages(type_id=type_id) if p["price"] > 0 and p["stock"] > 0]
         kb       = types.InlineKeyboardMarkup()
         user     = get_user(uid)
         for p in packages:
             price = get_effective_price(uid, p)
-            if p["stock"] > 0:
-                title = f"{p['name']} | {p['volume_gb']}GB | {p['duration_days']} روز | {fmt_price(price)} ت"
-                kb.add(types.InlineKeyboardButton(title, callback_data=f"buy:p:{p['id']}"))
+            title = f"{p['name']} | {p['volume_gb']}GB | {p['duration_days']} روز | {fmt_price(price)} ت"
+            kb.add(types.InlineKeyboardButton(title, callback_data=f"buy:p:{p['id']}"))
         kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="buy:start"))
         bot.answer_callback_query(call.id)
         agent_note = "\n\n🤝 <i>این قیمت‌ها مخصوص همکاری شماست</i>" if user and user["is_agent"] else ""
         if not packages:
-            send_or_edit(call, "📭 فعلاً پکیج فعالی برای این نوع ثبت نشده است.", kb)
+            send_or_edit(call, "📭 در حال حاضر بسته‌ای برای فروش در این نوع موجود نیست.", kb)
         else:
             send_or_edit(call, f"📦 یکی از پکیج‌ها را انتخاب کنید:{agent_note}", kb)
         return
@@ -1400,11 +1412,19 @@ def _dispatch_callback(call, uid, data):
     if data == "test:start":
         items = get_all_types()
         kb    = types.InlineKeyboardMarkup()
+        has_any = False
         for item in items:
-            kb.add(types.InlineKeyboardButton(f"🎁 {item['name']}", callback_data=f"test:t:{item['id']}"))
+            # Check if there's at least one free test package with stock
+            packs = [p for p in get_packages(type_id=item['id'], price_only=0) if p['stock'] > 0]
+            if packs:
+                kb.add(types.InlineKeyboardButton(f"🎁 {item['name']}", callback_data=f"test:t:{item['id']}"))
+                has_any = True
         kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
         bot.answer_callback_query(call.id)
-        send_or_edit(call, "🎁 <b>تست رایگان</b>\n\nنوع مورد نظر را انتخاب کنید:", kb)
+        if not has_any:
+            send_or_edit(call, "📭 در حال حاضر تست رایگانی موجود نیست.", kb)
+        else:
+            send_or_edit(call, "🎁 <b>تست رایگان</b>\n\nنوع مورد نظر را انتخاب کنید:", kb)
         return
 
     if data.startswith("test:t:"):
@@ -1523,7 +1543,16 @@ def _dispatch_callback(call, uid, data):
 
     if data == "admin:panel":
         bot.answer_callback_query(call.id)
-        send_or_edit(call, "⚙️ <b>پنل مدیریت</b>\n\nبخش مورد نظر را انتخاب کنید:", kb_admin_panel())
+        text = (
+            "⚙️ <b>پنل مدیریت</b>\n\n"
+            "بخش مورد نظر را انتخاب کنید:\n\n"
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+            "💡 <b>ConfigFlow</b> | پروژه متن‌باز\n"
+            "👨‍💻 توسعه‌دهنده: @Emad_Habibnia\n"
+            "🌐 <a href='https://github.com/Emadhabibnia1385/ConfigFlow'>GitHub ConfigFlow</a>\n"
+            "❤️ <a href='https://t.me/EmadHabibnia/4'>حمایت از پروژه و دونیت</a>"
+        )
+        send_or_edit(call, text, kb_admin_panel())
         return
 
     # ── Admin: Types ──────────────────────────────────────────────────────────
@@ -1662,6 +1691,45 @@ def _dispatch_callback(call, uid, data):
         bot.answer_callback_query(call.id)
         return
 
+    if data.startswith("adm:stk:all:"):
+        parts     = data.split(":")
+        sold_flag = (parts[3] == "sl")
+        page      = int(parts[4])
+        # Query all configs across packages
+        offset = page * CONFIGS_PER_PAGE
+        with get_conn() as conn:
+            if sold_flag:
+                cfgs = conn.execute(
+                    "SELECT * FROM configs WHERE sold_to IS NOT NULL ORDER BY id DESC LIMIT ? OFFSET ?",
+                    (CONFIGS_PER_PAGE, offset)
+                ).fetchall()
+                total = conn.execute("SELECT COUNT(*) AS n FROM configs WHERE sold_to IS NOT NULL").fetchone()["n"]
+            else:
+                cfgs = conn.execute(
+                    "SELECT * FROM configs WHERE sold_to IS NULL AND reserved_payment_id IS NULL ORDER BY id ASC LIMIT ? OFFSET ?",
+                    (CONFIGS_PER_PAGE, offset)
+                ).fetchall()
+                total = conn.execute("SELECT COUNT(*) AS n FROM configs WHERE sold_to IS NULL AND reserved_payment_id IS NULL").fetchone()["n"]
+        total_pages = max(1, (total + CONFIGS_PER_PAGE - 1) // CONFIGS_PER_PAGE)
+        kind_str   = "sl" if sold_flag else "av"
+        kb         = types.InlineKeyboardMarkup()
+        for c in cfgs:
+            expired_mark = " 🔴" if c["is_expired"] else ""
+            label = f"{c['service_name']}{expired_mark}"
+            kb.add(types.InlineKeyboardButton(label, callback_data=f"adm:stk:cfg:{c['id']}"))
+        nav_row = []
+        if page > 0:
+            nav_row.append(types.InlineKeyboardButton("⬅️ قبلی", callback_data=f"adm:stk:all:{kind_str}:{page-1}"))
+        if page < total_pages - 1:
+            nav_row.append(types.InlineKeyboardButton("بعدی ➡️", callback_data=f"adm:stk:all:{kind_str}:{page+1}"))
+        if nav_row:
+            kb.row(*nav_row)
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:stock"))
+        bot.answer_callback_query(call.id)
+        label_kind = "🔴 کل فروخته شده" if sold_flag else "🟢 کل موجود"
+        send_or_edit(call, f"📋 {label_kind} | صفحه {page+1}/{total_pages} | تعداد کل: {total}", kb)
+        return
+
     if data.startswith("adm:stk:pk:"):
         package_id  = int(data.split(":")[3])
         package_row = get_package(package_id)
@@ -1738,7 +1806,8 @@ def _dispatch_callback(call, uid, data):
             kb.add(types.InlineKeyboardButton("🔴 منقضی کردن", callback_data=f"adm:stk:exp:{config_id}"))
         else:
             text += "\n\n⚠️ این سرویس منقضی شده است."
-        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:stock"))
+        kb.add(types.InlineKeyboardButton("� حذف کانفیگ", callback_data=f"adm:stk:del:{config_id}"))
+        kb.add(types.InlineKeyboardButton("�🔙 بازگشت", callback_data="admin:stock"))
         bot.answer_callback_query(call.id)
         send_or_edit(call, text, kb)
         return
@@ -1759,6 +1828,14 @@ def _dispatch_callback(call, uid, data):
                 pass
         bot.answer_callback_query(call.id, "سرویس منقضی شد.")
         send_or_edit(call, "✅ سرویس منقضی اعلام شد.", back_button("admin:stock"))
+        return
+
+    if data.startswith("adm:stk:del:"):
+        config_id = int(data.split(":")[3])
+        with get_conn() as conn:
+            conn.execute("DELETE FROM configs WHERE id=?", (config_id,))
+        bot.answer_callback_query(call.id, "کانفیگ حذف شد.")
+        send_or_edit(call, "✅ کانفیگ با موفقیت حذف شد.", back_button("admin:stock"))
         return
 
     # ── Admin: Users ──────────────────────────────────────────────────────────
@@ -1819,7 +1896,7 @@ def _dispatch_callback(call, uid, data):
                 expired_mark = " 🔴" if p["is_expired"] else ""
                 kb.add(types.InlineKeyboardButton(
                     f"{p['service_name']}{expired_mark}",
-                    callback_data=f"adm:stk:cfg:{p['config_id']}"
+                    callback_data=f"adm:usrcfg:{target_id}:{p['config_id']}"
                 ))
             kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"adm:usr:v:{target_id}"))
             bot.answer_callback_query(call.id)
@@ -1855,6 +1932,45 @@ def _dispatch_callback(call, uid, data):
         bot.answer_callback_query(call.id)
         send_or_edit(call, "💰 قیمت اختصاصی (تومان) را وارد کنید.\nبرای بازگشت به قیمت عادی، عدد <b>0</b> بفرستید:",
                      back_button(f"adm:usr:v:{target_id}"))
+        return
+
+    # Admin user config detail (with unassign/delete)
+    if data.startswith("adm:usrcfg:"):
+        parts     = data.split(":")
+        target_id = int(parts[2])
+        config_id = int(parts[3])
+        with get_conn() as conn:
+            row = conn.execute("SELECT * FROM configs WHERE id=?", (config_id,)).fetchone()
+        if not row:
+            bot.answer_callback_query(call.id, "یافت نشد.", show_alert=True)
+            return
+        text = (
+            f"🔮 نام سرویس: <b>{esc(row['service_name'])}</b>\n\n"
+            f"💝 Config:\n<code>{esc(row['config_text'])}</code>\n\n"
+            f"🔋 Volume web: {esc(row['inquiry_link'] or '-')}\n"
+            f"🗓 ثبت: {esc(row['created_at'])}\n"
+            f"🗓 فروش: {esc(row['sold_at'] or '-')}"
+        )
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("🔄 حذف از کاربر (برگشت به مانده‌ها)", callback_data=f"adm:usrcfg:unassign:{target_id}:{config_id}"))
+        if not row["is_expired"]:
+            kb.add(types.InlineKeyboardButton("🔴 منقضی کردن", callback_data=f"adm:stk:exp:{config_id}"))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"adm:usr:cfgs:{target_id}"))
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, text, kb)
+        return
+
+    if data.startswith("adm:usrcfg:unassign:"):
+        parts     = data.split(":")
+        target_id = int(parts[3])
+        config_id = int(parts[4])
+        with get_conn() as conn:
+            # Reset config to available
+            conn.execute("UPDATE configs SET sold_to=NULL, purchase_id=NULL, sold_at=NULL, reserved_payment_id=NULL, is_expired=0 WHERE id=?", (config_id,))
+            # Delete the purchase record
+            conn.execute("DELETE FROM purchases WHERE config_id=? AND user_id=?", (config_id, target_id))
+        bot.answer_callback_query(call.id, "کانفیگ از کاربر حذف شد.")
+        send_or_edit(call, "✅ کانفیگ از کاربر حذف و به مانده‌ها برگشت.", back_button(f"adm:usr:v:{target_id}"))
         return
 
     if data.startswith("adm:acfg:t:"):  # assign config: type selected
@@ -1939,6 +2055,8 @@ def _dispatch_callback(call, uid, data):
             types.InlineKeyboardButton("💳 درگاه‌های پرداخت",   callback_data="adm:set:gateways"),
         )
         kb.add(types.InlineKeyboardButton("📢 کانال قفل",        callback_data="adm:set:channel"))
+        kb.add(types.InlineKeyboardButton("✏️ ویرایش متن استارت", callback_data="adm:set:start_text"))
+        kb.add(types.InlineKeyboardButton("💾 بکاپ",            callback_data="admin:backup"))
         kb.add(types.InlineKeyboardButton("🔙 بازگشت",        callback_data="admin:panel"))
         bot.answer_callback_query(call.id)
         send_or_edit(call, "⚙️ <b>تنظیمات</b>", kb)
@@ -2208,10 +2326,25 @@ def _dispatch_callback(call, uid, data):
         send_or_edit(
             call,
             f"📢 <b>کانال قفل</b>\n\n"
-            f"کانال فعلی: <code>{esc(current or 'ثبت نشده')}</code>\n\n"
-            "آیدی عددی یا @username کانال را وارد کنید.\n"
-            "برای غیرفعال کردن، <code>-</code> بفرستید.\n\n"
-            "⚠️ مهم: ربات باید ادمین کانال باشد.",
+            f"کانال فعلی: {esc(current or 'ثبت نشده')}\n\n"
+            "@username کانال را وارد کنید\n"
+            "برای غیرفعال کردن، <code>-</code> بفرستید\n\n"
+            "⚠️ ربات باید ادمین کانال باشد",
+            back_button("admin:settings")
+        )
+        return
+
+    if data == "adm:set:start_text":
+        current = setting_get("start_text", "")
+        state_set(uid, "admin_set_start_text")
+        bot.answer_callback_query(call.id)
+        preview = esc(current[:200]) + "..." if len(current) > 200 else esc(current or "پیش‌فرض")
+        send_or_edit(
+            call,
+            f"✏️ <b>ویرایش متن استارت</b>\n\n"
+            f"متن فعلی:\n{preview}\n\n"
+            "متن جدید را ارسال کنید. می‌توانید از تگ‌های HTML استفاده کنید.\n"
+            "برای بازگشت به متن پیش‌فرض، <code>-</code> بفرستید.",
             back_button("admin:settings")
         )
         return
@@ -2227,7 +2360,7 @@ def _dispatch_callback(call, uid, data):
         kb.add(types.InlineKeyboardButton(toggle_label, callback_data="adm:bkp:toggle"))
         kb.add(types.InlineKeyboardButton(f"⏰ زمان‌بندی: هر {interval} ساعت", callback_data="adm:bkp:interval"))
         kb.add(types.InlineKeyboardButton("📤 تنظیم مقصد", callback_data="adm:bkp:target"))
-        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:panel"))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:settings"))
         bot.answer_callback_query(call.id)
         send_or_edit(
             call,
@@ -2307,10 +2440,8 @@ def _show_admin_packages(call):
         kb.row(
             types.InlineKeyboardButton(f"📦 {p['name']} | {p['volume_gb']}GB | {fmt_price(p['price'])}ت",
                                        callback_data="noop"),
-        )
-        kb.row(
-            types.InlineKeyboardButton("✏️ ویرایش", callback_data=f"admin:pkg:edit:{p['id']}"),
-            types.InlineKeyboardButton("🗑 حذف",    callback_data=f"admin:pkg:del:{p['id']}"),
+            types.InlineKeyboardButton("✏️", callback_data=f"admin:pkg:edit:{p['id']}"),
+            types.InlineKeyboardButton("🗑",  callback_data=f"admin:pkg:del:{p['id']}"),
         )
     kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:panel"))
     send_or_edit(call, "📦 <b>مدیریت پکیج‌ها</b>", kb)
@@ -2318,15 +2449,11 @@ def _show_admin_packages(call):
 def _show_admin_stock(call):
     rows = get_registered_packages_stock()
     kb   = types.InlineKeyboardMarkup()
-    kb.row(
-        types.InlineKeyboardButton("🟢 کل موجود",    callback_data="noop"),
-        types.InlineKeyboardButton("🔴 کل فروخته",   callback_data="noop"),
-    )
     total_avail = sum(r["stock"] for r in rows)
     total_sold  = sum(r["sold_count"] for r in rows)
     kb.row(
-        types.InlineKeyboardButton(str(total_avail), callback_data="noop"),
-        types.InlineKeyboardButton(str(total_sold),  callback_data="noop"),
+        types.InlineKeyboardButton(f"🟢 کل موجود ({total_avail})",  callback_data="adm:stk:all:av:0"),
+        types.InlineKeyboardButton(f"🔴 کل فروخته ({total_sold})", callback_data="adm:stk:all:sl:0"),
     )
     for row in rows:
         kb.add(types.InlineKeyboardButton(
@@ -2406,11 +2533,12 @@ def _fake_call(call, new_data):
 # ── Backup ─────────────────────────────────────────────────────────────────────
 def _send_backup(target_chat_id):
     try:
+        ts = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         with open(DB_NAME, "rb") as f:
             bot.send_document(
                 target_chat_id, f,
-                caption=f"💾 بکاپ دیتابیس – {now_str()}",
-                visible_file_name=f"backup_{datetime.now().strftime('%Y%m%d_%H%M')}.db"
+                caption=f"🗄 بکاپ دیتابیس\n\n📦 ConfigFlow_backup_{ts}.db",
+                visible_file_name=f"ConfigFlow_backup_{ts}.db"
             )
     except Exception as e:
         try:
@@ -2711,6 +2839,13 @@ def universal_handler(message):
             setting_set("channel_id", "" if val == "-" else val)
             state_clear(uid)
             bot.send_message(uid, "✅ کانال ذخیره شد.", reply_markup=back_button("admin:settings"))
+            return
+
+        if sn == "admin_set_start_text" and is_admin(uid):
+            val = (message.text or "").strip()
+            setting_set("start_text", "" if val == "-" else val)
+            state_clear(uid)
+            bot.send_message(uid, "✅ متن استارت ذخیره شد.", reply_markup=back_button("admin:settings"))
             return
 
         # ── Admin: Backup settings ─────────────────────────────────────────────
