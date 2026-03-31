@@ -2504,7 +2504,7 @@ def _show_admin_packages(call):
         )
     kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:panel"))
     send_or_edit(call, "📦 <b>مدیریت پکیج‌ها</b>", kb)
-ش
+
 def _show_admin_stock(call):
     rows = get_registered_packages_stock()
     kb   = types.InlineKeyboardMarkup()
