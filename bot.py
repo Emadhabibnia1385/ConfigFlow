@@ -2504,7 +2504,7 @@ def _show_admin_packages(call):
         )
     kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:panel"))
     send_or_edit(call, "📦 <b>مدیریت پکیج‌ها</b>", kb)
-
+ش
 def _show_admin_stock(call):
     rows = get_registered_packages_stock()
     kb   = types.InlineKeyboardMarkup()
@@ -2514,8 +2514,8 @@ def _show_admin_stock(call):
     kb.row(
         types.InlineKeyboardButton(f"🟢 کل موجود ({total_avail})",  callback_data="adm:stk:all:av:0"),
         types.InlineKeyboardButton(f"🔴 کل فروخته ({total_sold})", callback_data="adm:stk:all:sl:0"),
+        types.InlineKeyboardButton(f"❌ کل منقضی ({total_expired})", callback_data="adm:stk:all:ex:0"),
     )
-    kb.add(types.InlineKeyboardButton(f"❌ کل منقضی ({total_expired})", callback_data="adm:stk:all:ex:0"))
     for row in rows:
         kb.add(types.InlineKeyboardButton(
             f"📦 {row['type_name']} - {row['name']} | 🟢{row['stock']} 🔴{row['sold_count']} ❌{row['expired_count']}",
