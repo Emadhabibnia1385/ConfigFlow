@@ -2415,6 +2415,7 @@ def _dispatch_callback(call, uid, data):
         target   = setting_get("backup_target_id", "")
         kb       = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("💾 بکاپ دستی", callback_data="adm:bkp:manual"))
+        kb.add(types.InlineKeyboardButton("📥 بازیابی بکاپ", callback_data="adm:bkp:restore"))
         toggle_label = "🔴 غیرفعال کردن بکاپ خودکار" if enabled == "1" else "🟢 فعال کردن بکاپ خودکار"
         kb.add(types.InlineKeyboardButton(toggle_label, callback_data="adm:bkp:toggle"))
         kb.add(types.InlineKeyboardButton(f"⏰ زمان‌بندی: هر {interval} ساعت", callback_data="adm:bkp:interval"))
@@ -2455,6 +2456,16 @@ def _dispatch_callback(call, uid, data):
         bot.answer_callback_query(call.id)
         send_or_edit(call, "📤 آیدی عددی کاربر یا کانال برای دریافت بکاپ را وارد کنید:",
                      back_button("admin:backup"))
+        return
+
+    if data == "adm:bkp:restore":
+        state_set(uid, "admin_restore_backup")
+        bot.answer_callback_query(call.id)
+        send_or_edit(call,
+            "📥 <b>بازیابی بکاپ</b>\n\n"
+            "⚠️ <b>توجه:</b> با بازیابی بکاپ، دیتابیس فعلی ربات حذف و با فایل بکاپ جایگزین می‌شود.\n\n"
+            "فایل بکاپ (<code>.db</code>) را ارسال کنید:",
+            back_button("admin:backup"))
         return
 
     # ── Admin: Payment approve/reject ─────────────────────────────────────────
@@ -2925,6 +2936,35 @@ def universal_handler(message):
             setting_set("backup_target_id", val)
             state_clear(uid)
             bot.send_message(uid, "✅ مقصد بکاپ ذخیره شد.", reply_markup=back_button("admin:backup"))
+            return
+
+        if sn == "admin_restore_backup" and is_admin(uid):
+            if not message.document:
+                bot.send_message(uid, "⚠️ لطفاً فایل بکاپ (.db) را ارسال کنید.", reply_markup=back_button("admin:backup"))
+                return
+            file_name = message.document.file_name or ""
+            if not file_name.lower().endswith(".db"):
+                bot.send_message(uid, "⚠️ فقط فایل با پسوند <code>.db</code> قابل قبول است.", reply_markup=back_button("admin:backup"))
+                return
+            try:
+                file_info = bot.get_file(message.document.file_id)
+                downloaded = bot.download_file(file_info.file_path)
+                # ابتدا بکاپ از دیتابیس فعلی
+                import shutil
+                backup_ts = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+                pre_restore_backup = f"{DB_NAME}.pre_restore_{backup_ts}"
+                if os.path.exists(DB_NAME):
+                    shutil.copy2(DB_NAME, pre_restore_backup)
+                # جایگزینی دیتابیس
+                with open(DB_NAME, "wb") as f:
+                    f.write(downloaded)
+                state_clear(uid)
+                bot.send_message(uid,
+                    f"✅ بکاپ با موفقیت بازیابی شد.\n\n"
+                    f"💾 نسخه قبلی در <code>{esc(pre_restore_backup)}</code> ذخیره شد.",
+                    reply_markup=back_button("admin:backup"))
+            except Exception as e:
+                bot.send_message(uid, f"❌ خطا در بازیابی بکاپ: {esc(str(e))}", reply_markup=back_button("admin:backup"))
             return
 
         # ── Admin: Balance edit ────────────────────────────────────────────────
