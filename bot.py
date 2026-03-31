@@ -18,6 +18,7 @@ import sqlite3
 import traceback
 import threading
 import urllib.request
+import urllib.parse
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -2070,9 +2071,111 @@ def _dispatch_callback(call, uid, data):
     if data.startswith("adm:cfg:p:"):
         package_id  = int(data.split(":")[3])
         package_row = get_package(package_id)
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("📝 ثبت تکی", callback_data=f"adm:cfg:single:{package_id}"))
+        kb.add(types.InlineKeyboardButton("📋 ثبت دسته‌ای", callback_data=f"adm:cfg:bulk:{package_id}"))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"adm:cfg:t:{package_row['type_id']}"))
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, "📝 روش ثبت کانفیگ را انتخاب کنید:", kb)
+        return
+
+    if data.startswith("adm:cfg:single:"):
+        package_id  = int(data.split(":")[3])
+        package_row = get_package(package_id)
         state_set(uid, "admin_add_config_service", package_id=package_id, type_id=package_row["type_id"])
         bot.answer_callback_query(call.id)
         send_or_edit(call, "✏️ نام سرویس را وارد کنید:", back_button("admin:add_config"))
+        return
+
+    if data.startswith("adm:cfg:bulk:"):
+        # Could be adm:cfg:bulk:{pkg_id} or adm:cfg:bulk:inq:y/n:{pkg_id} or adm:cfg:bulk:skip:...
+        rest = data[len("adm:cfg:bulk:"):]
+
+        # Skip prefix
+        if rest.startswith("skippre:"):
+            pkg_id = int(rest.split(":")[1])
+            s = state_data(uid)
+            state_set(uid, "admin_bulk_suffix",
+                      package_id=s["package_id"], type_id=s["type_id"],
+                      has_inquiry=s["has_inquiry"], count=s["count"], prefix="")
+            bot.answer_callback_query(call.id)
+            send_or_edit(call,
+                "✂️ <b>پسوند حذفی از نام کانفیگ</b>\n\n"
+                "وقتی چندتا اکسترنال پروکسی ست می‌کنید، انتهای نام کانفیگ متن‌های اضافه اکسترنال‌ها اضافه می‌شود.\n"
+                "اگر نمی‌خواهید آن‌ها در نام کانفیگ بیاید، پسوند را اینجا وارد کنید.\n\n"
+                "💡 مثال: <code>-main</code>",
+                back_button("admin:add_config"))
+            kb = types.InlineKeyboardMarkup()
+            kb.add(types.InlineKeyboardButton("⏭ بعدی (بدون پسوند)", callback_data=f"adm:cfg:bulk:skipsuf:{pkg_id}"))
+            kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:add_config"))
+            send_or_edit(call,
+                "✂️ <b>پسوند حذفی از نام کانفیگ</b>\n\n"
+                "وقتی چندتا اکسترنال پروکسی ست می‌کنید، انتهای نام کانفیگ متن‌های اضافه اکسترنال‌ها اضافه می‌شود.\n"
+                "اگر نمی‌خواهید آن‌ها در نام کانفیگ بیاید، پسوند را اینجا وارد کنید.\n\n"
+                "💡 مثال: <code>-main</code>", kb)
+            return
+
+        # Skip suffix
+        if rest.startswith("skipsuf:"):
+            pkg_id = int(rest.split(":")[1])
+            s = state_data(uid)
+            has_inq = s.get("has_inquiry", False)
+            count = s.get("count", 0)
+            prefix = s.get("prefix", "")
+            state_set(uid, "admin_bulk_data",
+                      package_id=s["package_id"], type_id=s["type_id"],
+                      has_inquiry=has_inq, count=count, prefix=prefix, suffix="")
+            bot.answer_callback_query(call.id)
+            if has_inq:
+                fmt_text = (
+                    "📋 <b>ارسال کانفیگ‌ها</b>\n\n"
+                    f"تعداد: <b>{count}</b> کانفیگ\n\n"
+                    "هر کانفیگ <b>دو خط</b> دارد:\n"
+                    "خط اول: لینک کانفیگ\n"
+                    "خط دوم: لینک استعلام (شروع با http)\n\n"
+                    "💡 مثال:\n"
+                    "<code>vless://abc...#name1\n"
+                    "http://panel.com/sub/1\n"
+                    "vless://def...#name2\n"
+                    "http://panel.com/sub/2</code>"
+                )
+            else:
+                fmt_text = (
+                    "📋 <b>ارسال کانفیگ‌ها</b>\n\n"
+                    f"تعداد: <b>{count}</b> کانفیگ\n\n"
+                    "هر خط یک لینک کانفیگ:\n\n"
+                    "💡 مثال:\n"
+                    "<code>vless://abc...#name1\n"
+                    "vless://def...#name2</code>"
+                )
+            send_or_edit(call, fmt_text, back_button("admin:add_config"))
+            return
+
+        # Inquiry yes/no
+        if rest.startswith("inq:"):
+            sub_parts = rest.split(":")
+            yn = sub_parts[1]
+            pkg_id = int(sub_parts[2])
+            has_inq = (yn == "y")
+            state_set(uid, "admin_bulk_count",
+                      package_id=pkg_id, type_id=state_data(uid).get("type_id", 0),
+                      has_inquiry=has_inq)
+            bot.answer_callback_query(call.id)
+            send_or_edit(call, "🔢 تعداد کانفیگ‌ها را وارد کنید:", back_button("admin:add_config"))
+            return
+
+        # Initial: ask about inquiry links
+        package_id  = int(rest)
+        package_row = get_package(package_id)
+        state_set(uid, "admin_bulk_init", package_id=package_id, type_id=package_row["type_id"])
+        kb = types.InlineKeyboardMarkup()
+        kb.row(
+            types.InlineKeyboardButton("✅ بله", callback_data=f"adm:cfg:bulk:inq:y:{package_id}"),
+            types.InlineKeyboardButton("❌ خیر", callback_data=f"adm:cfg:bulk:inq:n:{package_id}"),
+        )
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"adm:cfg:p:{package_id}"))
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, "🔗 آیا کانفیگ‌ها <b>لینک استعلام</b> هم دارند؟", kb)
         return
 
     # ── Admin: Stock / Config management ─────────────────────────────────────
@@ -3357,6 +3460,165 @@ def universal_handler(message):
             add_config(sd["type_id"], sd["package_id"], sd["service_name"], sd["config_text"], inquiry_link)
             state_clear(uid)
             bot.send_message(uid, "✅ کانفیگ با موفقیت ثبت شد.", reply_markup=kb_admin_panel())
+            return
+
+        if sn == "admin_add_config_bulk" and is_admin(uid):
+            # Legacy fallback — should not reach here with new flow
+            state_clear(uid)
+            bot.send_message(uid, "⚠️ لطفاً دوباره از منو اقدام کنید.", reply_markup=kb_admin_panel())
+            return
+
+        if sn == "admin_bulk_count" and is_admin(uid):
+            count = parse_int(message.text or "")
+            if not count or count <= 0:
+                bot.send_message(uid, "⚠️ تعداد معتبر وارد کنید.", reply_markup=back_button("admin:add_config"))
+                return
+            pkg_id = sd["package_id"]
+            state_set(uid, "admin_bulk_prefix",
+                      package_id=sd["package_id"], type_id=sd["type_id"],
+                      has_inquiry=sd["has_inquiry"], count=count)
+            kb = types.InlineKeyboardMarkup()
+            kb.add(types.InlineKeyboardButton("⏭ بعدی (بدون پیشوند)", callback_data=f"adm:cfg:bulk:skippre:{pkg_id}"))
+            kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:add_config"))
+            bot.send_message(uid,
+                "✂️ <b>پیشوند حذفی از نام کانفیگ</b>\n\n"
+                "زمانی که کانفیگ را در پنل می‌سازید، اگر اینباند <b>ریمارک (Remark)</b> دارد، "
+                "ابتدای نام کانفیگ اضافه می‌شود.\n"
+                "اگر نمی‌خواهید آن در نام کانفیگ بیاید، پیشوند را اینجا وارد کنید.\n\n"
+                "💡 مثال: <code>%E2%9A%95%EF%B8%8FTUN_-</code>\n"
+                "یا: <code>⚕️TUN_-</code>",
+                reply_markup=kb)
+            return
+
+        if sn == "admin_bulk_prefix" and is_admin(uid):
+            prefix = (message.text or "").strip()
+            pkg_id = sd["package_id"]
+            state_set(uid, "admin_bulk_suffix",
+                      package_id=sd["package_id"], type_id=sd["type_id"],
+                      has_inquiry=sd["has_inquiry"], count=sd["count"], prefix=prefix)
+            kb = types.InlineKeyboardMarkup()
+            kb.add(types.InlineKeyboardButton("⏭ بعدی (بدون پسوند)", callback_data=f"adm:cfg:bulk:skipsuf:{pkg_id}"))
+            kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:add_config"))
+            bot.send_message(uid,
+                "✂️ <b>پسوند حذفی از نام کانفیگ</b>\n\n"
+                "وقتی چندتا <b>اکسترنال پروکسی</b> ست می‌کنید، انتهای نام کانفیگ متن‌های اضافه اکسترنال‌ها اضافه می‌شود.\n"
+                "اگر نمی‌خواهید آن‌ها در نام کانفیگ بیاید، پسوند را اینجا وارد کنید.\n\n"
+                "💡 مثال: <code>-main</code>",
+                reply_markup=kb)
+            return
+
+        if sn == "admin_bulk_suffix" and is_admin(uid):
+            suffix = (message.text or "").strip()
+            has_inq = sd.get("has_inquiry", False)
+            count = sd.get("count", 0)
+            prefix = sd.get("prefix", "")
+            state_set(uid, "admin_bulk_data",
+                      package_id=sd["package_id"], type_id=sd["type_id"],
+                      has_inquiry=has_inq, count=count, prefix=prefix, suffix=suffix)
+            if has_inq:
+                fmt_text = (
+                    "📋 <b>ارسال کانفیگ‌ها</b>\n\n"
+                    f"تعداد: <b>{count}</b> کانفیگ\n\n"
+                    "هر کانفیگ <b>دو خط</b> دارد:\n"
+                    "خط اول: لینک کانفیگ\n"
+                    "خط دوم: لینک استعلام (شروع با http)\n\n"
+                    "💡 مثال:\n"
+                    "<code>vless://abc...#name1\n"
+                    "http://panel.com/sub/1\n"
+                    "vless://def...#name2\n"
+                    "http://panel.com/sub/2</code>"
+                )
+            else:
+                fmt_text = (
+                    "📋 <b>ارسال کانفیگ‌ها</b>\n\n"
+                    f"تعداد: <b>{count}</b> کانفیگ\n\n"
+                    "هر خط یک لینک کانفیگ:\n\n"
+                    "💡 مثال:\n"
+                    "<code>vless://abc...#name1\n"
+                    "vless://def...#name2</code>"
+                )
+            bot.send_message(uid, fmt_text, reply_markup=back_button("admin:add_config"))
+            return
+
+        if sn == "admin_bulk_data" and is_admin(uid):
+            raw = (message.text or "").strip()
+            if not raw:
+                bot.send_message(uid, "⚠️ متنی ارسال نشده.", reply_markup=back_button("admin:add_config"))
+                return
+            lines = [l.strip() for l in raw.splitlines() if l.strip()]
+            has_inq = sd.get("has_inquiry", False)
+            expected = sd.get("count", 0)
+            prefix = sd.get("prefix", "")
+            suffix = sd.get("suffix", "")
+            type_id = sd["type_id"]
+            package_id = sd["package_id"]
+
+            configs = []
+            if has_inq:
+                # Pair lines: config, inquiry, config, inquiry...
+                i = 0
+                while i < len(lines):
+                    cfg_line = lines[i]
+                    inq_line = lines[i + 1] if i + 1 < len(lines) and lines[i + 1].lower().startswith("http") else ""
+                    configs.append((cfg_line, inq_line))
+                    i += 2 if inq_line else 1
+            else:
+                for line in lines:
+                    configs.append((line, ""))
+
+            success_count = 0
+            errors = []
+            for idx, (cfg_text, inq_link) in enumerate(configs, 1):
+                # Extract name from after #
+                if "#" in cfg_text:
+                    raw_name = cfg_text.rsplit("#", 1)[1]
+                else:
+                    raw_name = f"config-{idx}"
+                # URL-decode the name
+                try:
+                    svc_name = urllib.parse.unquote(raw_name)
+                except Exception:
+                    svc_name = raw_name
+                # Strip prefix
+                if prefix and svc_name.startswith(prefix):
+                    svc_name = svc_name[len(prefix):]
+                # Also try URL-decoded prefix
+                if prefix:
+                    try:
+                        decoded_prefix = urllib.parse.unquote(prefix)
+                        if decoded_prefix != prefix and svc_name.startswith(decoded_prefix):
+                            svc_name = svc_name[len(decoded_prefix):]
+                    except Exception:
+                        pass
+                # Strip suffix
+                if suffix and svc_name.endswith(suffix):
+                    svc_name = svc_name[:-len(suffix)]
+                if suffix:
+                    try:
+                        decoded_suffix = urllib.parse.unquote(suffix)
+                        if decoded_suffix != suffix and svc_name.endswith(decoded_suffix):
+                            svc_name = svc_name[:-len(decoded_suffix)]
+                    except Exception:
+                        pass
+                svc_name = svc_name.strip().strip("-").strip("_").strip()
+                if not svc_name:
+                    svc_name = f"config-{idx}"
+                if not cfg_text:
+                    errors.append(f"کانفیگ {idx}: متن خالی")
+                    continue
+                try:
+                    add_config(type_id, package_id, svc_name, cfg_text, inq_link)
+                    success_count += 1
+                except Exception as e:
+                    errors.append(f"کانفیگ {idx}: {str(e)}")
+
+            state_clear(uid)
+            result = f"✅ <b>{success_count}</b> کانفیگ از <b>{expected}</b> با موفقیت ثبت شد."
+            if len(configs) != expected:
+                result += f"\n\n⚠️ تعداد ارسال‌شده ({len(configs)}) با تعداد مورد انتظار ({expected}) متفاوت است."
+            if errors:
+                result += "\n\n❌ خطاها:\n" + "\n".join(errors[:20])
+            bot.send_message(uid, result, reply_markup=kb_admin_panel())
             return
 
         # ── Admin: Settings ────────────────────────────────────────────────────
