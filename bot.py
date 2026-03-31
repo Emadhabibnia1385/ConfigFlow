@@ -817,10 +817,9 @@ def kb_admin_panel():
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.row(
         types.InlineKeyboardButton("🧩 مدیریت نوع و پکیج‌ها", callback_data="admin:types"),
-        types.InlineKeyboardButton("📝 ثبت کانفیگ",       callback_data="admin:add_config"),
     )
     kb.row(
-        types.InlineKeyboardButton("📚 کانفیگ‌های ثبت‌شده", callback_data="admin:stock"),
+        types.InlineKeyboardButton("📚 کانفیگ‌ها", callback_data="admin:stock"),
     )
     kb.row(
         types.InlineKeyboardButton("👥 مدیریت کاربران",   callback_data="admin:users"),
@@ -931,10 +930,7 @@ def deliver_purchase_message(chat_id, purchase_id):
     bio.name = "qrcode.png"
 
     kb = types.InlineKeyboardMarkup()
-    support_raw = setting_get("support_username", DEFAULT_ADMIN_HANDLE)
-    support_url = safe_support_url(support_raw)
-    if support_url:
-        kb.add(types.InlineKeyboardButton("♻️ تمدید / پشتیبانی", url=support_url))
+    kb.add(types.InlineKeyboardButton("♻️ تمدید", callback_data=f"renew:{purchase_id}"))
     kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
     bot.send_photo(chat_id, bio, caption=text, reply_markup=kb)
 
@@ -953,6 +949,31 @@ def admin_purchase_notify(method_label, user_row, package_row):
     for admin_id in ADMIN_IDS:
         try:
             bot.send_message(admin_id, text)
+        except Exception:
+            pass
+
+def admin_renewal_notify(user_id, purchase_item, package_row, amount, method_label):
+    user_row = get_user(user_id)
+    config_id = purchase_item["config_id"]
+    text = (
+        f"♻️ | <b>درخواست تمدید</b> ({method_label})\n\n"
+        f"👤 کاربر: {esc(user_row['full_name'])}\n"
+        f"⚡️ نام کاربری: {esc(user_row['username'] or 'ندارد')}\n"
+        f"🆔 آیدی: <code>{user_row['user_id']}</code>\n"
+        f"💰 مبلغ پرداختی: <b>{fmt_price(amount)}</b> تومان\n\n"
+        f"📌 <b>سرویس فعلی:</b>\n"
+        f"🔮 نام: {esc(purchase_item['service_name'])}\n"
+        f"🧩 نوع: {esc(purchase_item['type_name'])}\n\n"
+        f"📦 <b>پکیج تمدید:</b>\n"
+        f"✏️ نام: {esc(package_row['name'])}\n"
+        f"🔋 حجم: {package_row['volume_gb']} گیگ\n"
+        f"⏰ مدت: {package_row['duration_days']} روز"
+    )
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("✅ تمدید انجام شد", callback_data=f"renew:confirm:{config_id}:{user_id}"))
+    for admin_id in ADMIN_IDS:
+        try:
+            bot.send_message(admin_id, text, reply_markup=kb)
         except Exception:
             pass
 
@@ -1107,6 +1128,23 @@ def finish_card_payment_approval(payment_id, admin_note, approved):
             bot.send_message(user_id, f"✅ واریزی شما تأیید شد.\n\n{esc(admin_note)}")
             deliver_purchase_message(user_id, purchase_id)
             admin_purchase_notify(payment["payment_method"], get_user(user_id), package_row)
+        elif payment["kind"] == "renewal":
+            package_id  = payment["package_id"]
+            package_row = get_package(package_id)
+            config_id   = payment["config_id"]
+            complete_payment(payment_id)
+            bot.send_message(user_id,
+                "✅ <b>درخواست تمدید ارسال شد</b>\n\n"
+                "🔄 درخواست تمدید سرویس شما با موفقیت ثبت و برای پشتیبانی ارسال شد.\n"
+                "⏳ لطفاً کمی صبر کنید، پس از انجام تمدید به شما اطلاع داده خواهد شد.\n\n"
+                "🙏 از صبر و شکیبایی شما متشکریم.")
+            # Find purchase for this config
+            with get_conn() as conn:
+                row = conn.execute("SELECT purchase_id FROM configs WHERE id=?", (config_id,)).fetchone()
+            purchase_id = row["purchase_id"] if row else 0
+            item = get_purchase(purchase_id) if purchase_id else None
+            if item and package_row:
+                admin_renewal_notify(user_id, item, package_row, payment["amount"], payment["payment_method"])
         return True
     else:
         reject_payment(payment_id, admin_note)
@@ -1192,6 +1230,269 @@ def _dispatch_callback(call, uid, data):
             return
         bot.answer_callback_query(call.id)
         deliver_purchase_message(call.message.chat.id, purchase_id)
+        return
+
+    # ── Renewal flow ──────────────────────────────────────────────────────────
+    if data.startswith("renew:") and not data.startswith("renew:p:") and not data.startswith("renew:confirm:"):
+        purchase_id = int(data.split(":")[1])
+        item = get_purchase(purchase_id)
+        if not item or item["user_id"] != uid:
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        # Show packages of same type for renewal
+        with get_conn() as conn:
+            type_id = conn.execute("SELECT type_id FROM packages WHERE id=?", (item["package_id"],)).fetchone()["type_id"]
+        packages = [p for p in get_packages(type_id=type_id) if p["price"] > 0]
+        kb = types.InlineKeyboardMarkup()
+        user = get_user(uid)
+        for p in packages:
+            price = get_effective_price(uid, p)
+            title = f"{p['name']} | {p['volume_gb']}GB | {p['duration_days']} روز | {fmt_price(price)} ت"
+            kb.add(types.InlineKeyboardButton(title, callback_data=f"renew:p:{purchase_id}:{p['id']}"))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"mycfg:{purchase_id}"))
+        bot.answer_callback_query(call.id)
+        agent_note = "\n\n🤝 <i>این قیمت‌ها مخصوص همکاری شماست</i>" if user and user["is_agent"] else ""
+        if not packages:
+            send_or_edit(call, "📭 در حال حاضر پکیجی برای تمدید موجود نیست.", kb)
+        else:
+            send_or_edit(call, f"♻️ <b>تمدید سرویس</b>\n\nپکیج مورد نظر برای تمدید را انتخاب کنید:{agent_note}", kb)
+        return
+
+    if data.startswith("renew:p:"):
+        parts = data.split(":")
+        purchase_id = int(parts[2])
+        package_id  = int(parts[3])
+        item = get_purchase(purchase_id)
+        if not item or item["user_id"] != uid:
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        package_row = get_package(package_id)
+        if not package_row:
+            bot.answer_callback_query(call.id, "پکیج یافت نشد.", show_alert=True)
+            return
+        price = get_effective_price(uid, package_row)
+        state_set(uid, "renew_select_method",
+                  package_id=package_id, amount=price,
+                  kind="renewal", purchase_id=purchase_id)
+        text = (
+            "♻️ <b>تمدید سرویس</b>\n\n"
+            f"🔮 سرویس فعلی: {esc(item['service_name'])}\n"
+            f"📦 پکیج تمدید: {esc(package_row['name'])}\n"
+            f"🔋 حجم: {package_row['volume_gb']} گیگ\n"
+            f"⏰ مدت: {package_row['duration_days']} روز\n"
+            f"💰 قیمت: {fmt_price(price)} تومان\n\n"
+            "روش پرداخت را انتخاب کنید:"
+        )
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("💰 پرداخت از موجودی", callback_data=f"rpay:wallet:{purchase_id}:{package_id}"))
+        if is_gateway_available("card", uid) and is_card_info_complete():
+            kb.add(types.InlineKeyboardButton("💳 کارت به کارت", callback_data=f"rpay:card:{purchase_id}:{package_id}"))
+        if is_gateway_available("crypto", uid):
+            kb.add(types.InlineKeyboardButton("💎 ارز دیجیتال", callback_data=f"rpay:crypto:{purchase_id}:{package_id}"))
+        if is_gateway_available("tetrapay", uid):
+            kb.add(types.InlineKeyboardButton("🏦 پرداخت آنلاین (TetraPay)", callback_data=f"rpay:tetrapay:{purchase_id}:{package_id}"))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"renew:{purchase_id}"))
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, text, kb)
+        return
+
+    # ── Renewal payment handlers ──────────────────────────────────────────────
+    if data.startswith("rpay:wallet:"):
+        parts = data.split(":")
+        purchase_id = int(parts[2])
+        package_id  = int(parts[3])
+        item = get_purchase(purchase_id)
+        package_row = get_package(package_id)
+        user = get_user(uid)
+        if not item or item["user_id"] != uid:
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        if not package_row:
+            bot.answer_callback_query(call.id, "پکیج یافت نشد.", show_alert=True)
+            return
+        price = get_effective_price(uid, package_row)
+        if user["balance"] < price:
+            bot.answer_callback_query(call.id, "موجودی کیف پول کافی نیست.", show_alert=True)
+            return
+        update_balance(uid, -price)
+        payment_id = create_payment("renewal", uid, package_id, price, "wallet",
+                                     status="completed", config_id=item["config_id"])
+        complete_payment(payment_id)
+        bot.answer_callback_query(call.id, "پرداخت موفق بود.")
+        send_or_edit(call,
+            "✅ <b>درخواست تمدید ارسال شد</b>\n\n"
+            "🔄 درخواست تمدید سرویس شما با موفقیت ثبت و برای پشتیبانی ارسال شد.\n"
+            "⏳ لطفاً کمی صبر کنید، پس از انجام تمدید به شما اطلاع داده خواهد شد.\n\n"
+            "🙏 از صبر و شکیبایی شما متشکریم.",
+            back_button("main"))
+        admin_renewal_notify(uid, item, package_row, price, "کیف پول")
+        state_clear(uid)
+        return
+
+    if data.startswith("rpay:card:"):
+        parts = data.split(":")
+        purchase_id = int(parts[2])
+        package_id  = int(parts[3])
+        item = get_purchase(purchase_id)
+        package_row = get_package(package_id)
+        if not item or item["user_id"] != uid:
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        if not package_row:
+            bot.answer_callback_query(call.id, "پکیج یافت نشد.", show_alert=True)
+            return
+        card  = setting_get("payment_card", "")
+        bank  = setting_get("payment_bank", "")
+        owner = setting_get("payment_owner", "")
+        if not card:
+            bot.answer_callback_query(call.id, "اطلاعات پرداخت هنوز ثبت نشده است.", show_alert=True)
+            return
+        price = get_effective_price(uid, package_row)
+        payment_id = create_payment("renewal", uid, package_id, price, "card", status="pending",
+                                     config_id=item["config_id"])
+        state_set(uid, "await_renewal_receipt", payment_id=payment_id, purchase_id=purchase_id)
+        text = (
+            "💳 <b>کارت به کارت (تمدید)</b>\n\n"
+            f"لطفاً مبلغ <b>{fmt_price(price)}</b> تومان را به کارت زیر واریز کنید:\n\n"
+            f"🏦 {esc(bank or 'ثبت نشده')}\n"
+            f"👤 {esc(owner or 'ثبت نشده')}\n"
+            f"💳 <code>{esc(card)}</code>\n\n"
+            "📸 پس از واریز، تصویر رسید یا شماره پیگیری را ارسال کنید."
+        )
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, text, kb)
+        return
+
+    if data.startswith("rpay:crypto:"):
+        parts = data.split(":")
+        purchase_id = int(parts[2])
+        package_id  = int(parts[3])
+        item = get_purchase(purchase_id)
+        package_row = get_package(package_id)
+        if not item or item["user_id"] != uid:
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        if not package_row:
+            bot.answer_callback_query(call.id, "پکیج یافت نشد.", show_alert=True)
+            return
+        price = get_effective_price(uid, package_row)
+        state_set(uid, "renew_crypto_select_coin", package_id=package_id, amount=price,
+                  purchase_id=purchase_id, config_id=item["config_id"])
+        bot.answer_callback_query(call.id)
+        show_crypto_selection(call, amount=price)
+        return
+
+    if data.startswith("rpay:tetrapay:"):
+        parts = data.split(":")
+        purchase_id = int(parts[2])
+        package_id  = int(parts[3])
+        item = get_purchase(purchase_id)
+        package_row = get_package(package_id)
+        if not item or item["user_id"] != uid:
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        if not package_row:
+            bot.answer_callback_query(call.id, "پکیج یافت نشد.", show_alert=True)
+            return
+        price = get_effective_price(uid, package_row)
+        hash_id = f"rnw-{uid}-{package_id}-{int(datetime.now().timestamp())}"
+        success, result = create_tetrapay_order(price, hash_id, f"تمدید {package_row['name']}")
+        if not success:
+            bot.answer_callback_query(call.id, "خطا در ایجاد درخواست پرداخت آنلاین.", show_alert=True)
+            return
+        authority = result.get("Authority", "")
+        pay_url_bot = result.get("payment_url_bot", "")
+        pay_url_web = result.get("payment_url_web", "")
+        payment_id = create_payment("renewal", uid, package_id, price, "tetrapay", status="pending",
+                                     config_id=item["config_id"])
+        with get_conn() as conn:
+            conn.execute("UPDATE payments SET receipt_text=? WHERE id=?", (authority, payment_id))
+        state_set(uid, "await_renewal_tetrapay_verify", payment_id=payment_id, authority=authority,
+                  purchase_id=purchase_id)
+        text = (
+            "🏦 <b>پرداخت آنلاین (تمدید)</b>\n\n"
+            f"💰 مبلغ: <b>{fmt_price(price)}</b> تومان\n\n"
+            "لطفاً از یکی از لینک‌های زیر پرداخت را انجام دهید.\n"
+            "پس از پرداخت، دکمه «✅ بررسی پرداخت» را بزنید."
+        )
+        kb = types.InlineKeyboardMarkup()
+        if pay_url_bot and setting_get("tetrapay_mode_bot", "1") == "1":
+            kb.add(types.InlineKeyboardButton("💳 پرداخت در تلگرام", url=pay_url_bot))
+        if pay_url_web and setting_get("tetrapay_mode_web", "1") == "1":
+            kb.add(types.InlineKeyboardButton("🌐 پرداخت در مرورگر", url=pay_url_web))
+        kb.add(types.InlineKeyboardButton("✅ بررسی پرداخت", callback_data=f"rpay:tetrapay:verify:{payment_id}"))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, text, kb)
+        return
+
+    if data.startswith("rpay:tetrapay:verify:"):
+        payment_id = int(data.split(":")[3])
+        payment = get_payment(payment_id)
+        if not payment or payment["user_id"] != uid:
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        if payment["status"] != "pending":
+            bot.answer_callback_query(call.id, "این پرداخت قبلاً پردازش شده.", show_alert=True)
+            return
+        authority = payment["receipt_text"]
+        success, result = verify_tetrapay_order(authority)
+        if success:
+            complete_payment(payment_id)
+            package_row = get_package(payment["package_id"])
+            config_id = payment["config_id"]
+            with get_conn() as conn:
+                row = conn.execute("SELECT purchase_id FROM configs WHERE id=?", (config_id,)).fetchone()
+            purchase_id = row["purchase_id"] if row else 0
+            item = get_purchase(purchase_id) if purchase_id else None
+            bot.answer_callback_query(call.id, "✅ پرداخت تأیید شد!")
+            send_or_edit(call,
+                "✅ <b>درخواست تمدید ارسال شد</b>\n\n"
+                "🔄 درخواست تمدید سرویس شما با موفقیت ثبت و برای پشتیبانی ارسال شد.\n"
+                "⏳ لطفاً کمی صبر کنید، پس از انجام تمدید به شما اطلاع داده خواهد شد.\n\n"
+                "🙏 از صبر و شکیبایی شما متشکریم.",
+                back_button("main"))
+            if item:
+                admin_renewal_notify(uid, item, package_row, payment["amount"], "TetraPay")
+            state_clear(uid)
+        else:
+            bot.answer_callback_query(call.id, "❌ پرداخت هنوز تأیید نشده. لطفاً ابتدا پرداخت را انجام دهید.", show_alert=True)
+        return
+
+    # ── Admin: Confirm renewal ────────────────────────────────────────────────
+    if data.startswith("renew:confirm:"):
+        if not is_admin(uid):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        parts = data.split(":")
+        config_id  = int(parts[2])
+        target_uid = int(parts[3])
+        # Un-expire config if it was expired
+        with get_conn() as conn:
+            conn.execute("UPDATE configs SET is_expired=0 WHERE id=?", (config_id,))
+        bot.answer_callback_query(call.id, "✅ تمدید تأیید شد.")
+        # Update admin's message
+        try:
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        except Exception:
+            pass
+        try:
+            bot.send_message(call.message.chat.id, "✅ تمدید تأیید و به کاربر اطلاع داده شد.")
+        except Exception:
+            pass
+        # Notify user
+        try:
+            with get_conn() as conn:
+                cfg_row = conn.execute("SELECT service_name FROM configs WHERE id=?", (config_id,)).fetchone()
+            svc_name = cfg_row["service_name"] if cfg_row else ""
+            bot.send_message(target_uid,
+                f"🎉 <b>تمدید سرویس انجام شد!</b>\n\n"
+                f"✅ سرویس <b>{esc(svc_name)}</b> شما با موفقیت تمدید شد.\n"
+                "از اعتماد شما سپاسگزاریم. 🙏")
+        except Exception:
+            pass
         return
 
     # ── Buy flow ──────────────────────────────────────────────────────────────
@@ -1353,6 +1654,16 @@ def _dispatch_callback(call, uid, data):
             payment_id = sd.get("payment_id") or create_payment("wallet_charge", uid, None, amount, "crypto",
                                                                   status="pending", crypto_coin=coin_key)
             state_set(uid, "await_wallet_receipt", payment_id=payment_id, amount=amount)
+            bot.answer_callback_query(call.id)
+            show_crypto_payment_info(call, uid, coin_key, amount)
+        elif sn == "renew_crypto_select_coin":
+            package_id  = sd.get("package_id")
+            amount      = sd.get("amount")
+            config_id_r = sd.get("config_id")
+            purchase_id = sd.get("purchase_id")
+            payment_id = create_payment("renewal", uid, package_id, amount, "crypto",
+                                        status="pending", crypto_coin=coin_key, config_id=config_id_r)
+            state_set(uid, "await_renewal_receipt", payment_id=payment_id, purchase_id=purchase_id)
             bot.answer_callback_query(call.id)
             show_crypto_payment_info(call, uid, coin_key, amount)
         else:
@@ -2912,6 +3223,22 @@ def universal_handler(message):
             send_payment_to_admins(payment_id)
             return
 
+        # ── Renewal receipt ────────────────────────────────────────────────────
+        if sn == "await_renewal_receipt":
+            payment_id  = sd.get("payment_id")
+            file_id     = None
+            text_value  = message.text or ""
+            if message.photo:
+                file_id = message.photo[-1].file_id
+            elif message.document:
+                file_id = message.document.file_id
+            update_payment_receipt(payment_id, file_id, text_value.strip())
+            state_clear(uid)
+            bot.send_message(uid, "✅ رسید شما دریافت شد و برای بررسی ادمین ارسال گردید.",
+                             reply_markup=kb_main(uid))
+            send_payment_to_admins(payment_id)
+            return
+
         # ── Admin: Type add/edit ───────────────────────────────────────────────
         if sn == "admin_add_type" and is_admin(uid):
             name = (message.text or "").strip()
@@ -3217,7 +3544,9 @@ def universal_handler(message):
             update_balance(target_user_id, delta)
             state_clear(uid)
             action_label = "اضافه" if delta > 0 else "کاهش"
-            bot.send_message(uid, f"✅ موجودی {action_label} یافت.", reply_markup=kb_admin_panel())
+            kb = types.InlineKeyboardMarkup()
+            kb.add(types.InlineKeyboardButton("🔙 بازگشت به کاربر", callback_data=f"adm:usr:v:{target_user_id}"))
+            bot.send_message(uid, f"✅ موجودی {action_label} یافت.", reply_markup=kb)
             try:
                 msg = f"{'➕' if delta > 0 else '➖'} موجودی شما توسط ادمین {action_label} یافت.\n💰 مبلغ: {fmt_price(abs(amount))} تومان"
                 bot.send_message(target_user_id, msg)
