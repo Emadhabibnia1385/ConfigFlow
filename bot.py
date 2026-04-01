@@ -35,9 +35,35 @@ DB_NAME    = os.getenv("DB_NAME", "configflow.db")
 
 BRAND_TITLE          = "ConfigFlow"
 DEFAULT_ADMIN_HANDLE = ""
-CRYPTO_PRICES_API    = "https://sarfe.erfjab.com/api/prices"
+CRYPTO_PRICES_API    = "https://swapwallet.app/api/v1/market/prices"
 TETRAPAY_CREATE_URL  = "https://tetra98.com/api/create_order"
 TETRAPAY_VERIFY_URL  = "https://tetra98.com/api/verify"
+SWAPWALLET_BASE_URL  = "https://swapwallet.app/api"
+
+# ── Admin permission system ────────────────────────────────────────────────────
+ADMIN_PERMS = [
+    ("full",           "🌟 دسترسی کامل (مانند اونر)"),
+    ("types_packages", "🧩 مدیریت نوع و پکیج‌ها"),
+    ("register_config","📝 ثبت کانفیگ"),
+    ("view_configs",   "👁 دیدن کانفیگ‌های ثبت‌شده"),
+    ("manage_configs", "🗑 حذف و منقضی‌کردن کانفیگ‌ها"),
+    ("broadcast_all",  "📣 فوروارد همگانی"),
+    ("broadcast_cust", "🛍 فوروارد برای مشتریان"),
+    ("view_users",     "👥 مدیریت کاربران (فقط مشاهده)"),
+    ("agency",         "🤝 تایید/رد نمایندگی"),
+    ("assign_config",  "📦 ثبت کانفیگ برای کاربران"),
+    ("manage_balance", "💰 مدیریت موجودی کاربران"),
+    ("user_status",    "🔐 تعیین امن/ناامن کاربران"),
+    ("full_users",       "👑 دسترسی کامل مدیریت کاربران"),
+    ("settings",         "⚙️ دسترسی به تنظیمات ربات"),
+    ("approve_payments", "💳 تایید یا رد پرداخت‌ها"),
+    ("approve_renewal",  "🔄 تایید تمدید کردن"),
+]
+PERM_FULL_SET  = {"types_packages","register_config","view_configs","manage_configs",
+                  "broadcast_all","broadcast_cust","view_users","agency","assign_config",
+                  "manage_balance","user_status","full_users","settings",
+                  "approve_payments","approve_renewal"}
+PERM_USER_FULL = {"agency", "assign_config", "manage_balance", "user_status"}
 
 CRYPTO_API_SYMBOLS = {
     "tron":       "TRX",
@@ -71,7 +97,31 @@ def now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 def is_admin(uid):
-    return uid in ADMIN_IDS
+    if uid in ADMIN_IDS:
+        return True
+    # Also check DB-registered sub-admins (requires DB to be initialised first)
+    try:
+        return get_admin_user(uid) is not None
+    except Exception:
+        return False
+
+def admin_has_perm(uid, perm):
+    """Return True for owners unconditionally; for sub-admins check their JSON permissions."""
+    if uid in ADMIN_IDS:
+        return True
+    try:
+        row = get_admin_user(uid)
+    except Exception:
+        return False
+    if not row:
+        return False
+    perms = json.loads(row["permissions"] or "{}")
+    if perms.get("full"):
+        return True
+    # full_users grants all individual user-management perms
+    if perm in PERM_USER_FULL and perms.get("full_users"):
+        return True
+    return bool(perms.get(perm, False))
 
 def normalize_text_number(v):
     v = (v or "").translate(PERSIAN_DIGITS)
@@ -217,6 +267,12 @@ def init_db():
                 key   TEXT PRIMARY KEY,
                 value TEXT
             );
+            CREATE TABLE IF NOT EXISTS admin_users (
+                user_id     INTEGER PRIMARY KEY,
+                added_by    INTEGER NOT NULL,
+                added_at    TEXT    NOT NULL,
+                permissions TEXT    NOT NULL DEFAULT '{}'
+            );
         """)
 
         defaults = {
@@ -233,6 +289,10 @@ def init_db():
             "tetrapay_api_key":       "",
             "tetrapay_mode_bot":      "1",
             "tetrapay_mode_web":      "1",
+            "gw_swapwallet_enabled":    "0",
+            "gw_swapwallet_visibility": "public",
+            "swapwallet_api_key":       "",
+            "swapwallet_username":      "",
             "support_link":     "",
             "support_link_desc": "",
             "start_text":       "",
@@ -360,6 +420,62 @@ def verify_tetrapay_order(authority):
             result = json.loads(resp.read().decode())
         if str(result.get("status")) == "100":
             return True, result
+        return False, result
+    except Exception as e:
+        return False, {"error": str(e)}
+
+def create_swapwallet_invoice(amount_toman, order_id, description="پرداخت"):
+    api_key  = setting_get("swapwallet_api_key", "")
+    username = setting_get("swapwallet_username", "").strip()
+    if not api_key or not username:
+        return False, {"error": "SwapWallet credentials not set"}
+    payload = json.dumps({
+        "amount":       {"number": str(amount_toman), "unit": "IRT"},
+        "network":      "TRON",
+        "allowedToken": "USDT",
+        "ttl":          3600,
+        "orderId":      order_id,
+        "description":  description,
+    }).encode()
+    safe_user = urllib.parse.quote(username, safe="")
+    url = f"{SWAPWALLET_BASE_URL}/v2/payment/{safe_user}/invoices/temporary-wallet"
+    req = urllib.request.Request(
+        url, data=payload,
+        headers={
+            "Content-Type":  "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent":    "ConfigFlow/1.0",
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read().decode())
+        if result.get("status") == "OK":
+            return True, result.get("result", {})
+        return False, result
+    except Exception as e:
+        return False, {"error": str(e)}
+
+def check_swapwallet_invoice(invoice_id):
+    api_key  = setting_get("swapwallet_api_key", "")
+    username = setting_get("swapwallet_username", "").strip()
+    if not api_key or not username:
+        return False, {"error": "SwapWallet credentials not set"}
+    safe_user = urllib.parse.quote(username, safe="")
+    safe_inv  = urllib.parse.quote(invoice_id, safe="")
+    url = f"{SWAPWALLET_BASE_URL}/v2/payment/{safe_user}/invoices/{safe_inv}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent":    "ConfigFlow/1.0",
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read().decode())
+        if result.get("status") == "OK":
+            return True, result.get("result", {})
         return False, result
     except Exception as e:
         return False, {"error": str(e)}
@@ -763,6 +879,51 @@ def get_user_detail(user_id):
             (user_id,)
         ).fetchone()
 
+def count_all_users():
+    with get_conn() as conn:
+        return conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
+
+def search_users(query):
+    with get_conn() as conn:
+        if query.isdigit():
+            rows = conn.execute(
+                "SELECT * FROM users WHERE user_id=? LIMIT 50",
+                (int(query),)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM users WHERE full_name LIKE ? OR username LIKE ? ORDER BY user_id DESC LIMIT 50",
+                (f"%{query}%", f"%{query}%")
+            ).fetchall()
+    return rows
+
+# ── Admin user management helpers ─────────────────────────────────────────────
+def get_admin_user(user_id):
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM admin_users WHERE user_id=?", (user_id,)).fetchone()
+
+def get_all_admin_users():
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM admin_users ORDER BY added_at DESC").fetchall()
+
+def add_admin_user(user_id, added_by, permissions_dict):
+    perms_json = json.dumps(permissions_dict, ensure_ascii=False)
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO admin_users(user_id, added_by, added_at, permissions) VALUES(?,?,?,?)"
+            " ON CONFLICT(user_id) DO UPDATE SET permissions=excluded.permissions, added_by=excluded.added_by, added_at=excluded.added_at",
+            (user_id, added_by, now_str(), perms_json)
+        )
+
+def remove_admin_user(user_id):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM admin_users WHERE user_id=?", (user_id,))
+
+def update_admin_permissions(user_id, permissions_dict):
+    perms_json = json.dumps(permissions_dict, ensure_ascii=False)
+    with get_conn() as conn:
+        conn.execute("UPDATE admin_users SET permissions=? WHERE user_id=?", (perms_json, user_id))
+
 # ── Channel lock ───────────────────────────────────────────────────────────────
 def check_channel_membership(user_id):
     channel_id = setting_get("channel_id", "").strip()
@@ -839,19 +1000,42 @@ def kb_main(user_id):
         kb.add(types.InlineKeyboardButton("⚙️ ورود به پنل مدیریت", callback_data="admin:panel"))
     return kb
 
-def kb_admin_panel():
+def kb_admin_panel(uid=None):
     kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.row(
-        types.InlineKeyboardButton("🧩 مدیریت نوع و پکیج‌ها", callback_data="admin:types"),
-    )
-    kb.row(
-        types.InlineKeyboardButton("📚 کانفیگ‌ها", callback_data="admin:stock"),
-    )
-    kb.row(
-        types.InlineKeyboardButton("👥 مدیریت کاربران",   callback_data="admin:users"),
-        types.InlineKeyboardButton("📣 فوروارد همگانی",   callback_data="admin:broadcast"),
-    )
-    kb.add(types.InlineKeyboardButton("⚙️ تنظیمات",          callback_data="admin:settings"))
+    is_owner = (uid in ADMIN_IDS) if uid else False
+
+    # Types & packages
+    if is_owner or (uid and admin_has_perm(uid, "types_packages")):
+        kb.row(types.InlineKeyboardButton("🧩 مدیریت نوع و پکیج‌ها", callback_data="admin:types"))
+
+    # Configs
+    if is_owner or (uid and (admin_has_perm(uid, "view_configs") or
+                             admin_has_perm(uid, "register_config") or
+                             admin_has_perm(uid, "manage_configs"))):
+        kb.row(types.InlineKeyboardButton("📚 کانفیگ‌ها", callback_data="admin:stock"))
+
+    # Users + Admin management
+    show_users = is_owner or (uid and (admin_has_perm(uid, "view_users") or
+                                       admin_has_perm(uid, "full_users") or
+                                       any(admin_has_perm(uid, p) for p in PERM_USER_FULL)))
+    if show_users and is_owner:
+        kb.row(
+            types.InlineKeyboardButton("👥 مدیریت کاربران",  callback_data="admin:users"),
+            types.InlineKeyboardButton("👮 مدیریت ادمین‌ها", callback_data="admin:admins"),
+        )
+    elif show_users:
+        kb.row(types.InlineKeyboardButton("👥 مدیریت کاربران", callback_data="admin:users"))
+    elif is_owner:
+        kb.row(types.InlineKeyboardButton("👮 مدیریت ادمین‌ها", callback_data="admin:admins"))
+
+    # Settings
+    if is_owner or (uid and admin_has_perm(uid, "settings")):
+        kb.add(types.InlineKeyboardButton("⚙️ تنظیمات", callback_data="admin:settings"))
+
+    # Broadcast (moved below settings)
+    if is_owner or (uid and (admin_has_perm(uid, "broadcast_all") or admin_has_perm(uid, "broadcast_cust"))):
+        kb.add(types.InlineKeyboardButton("📣 فوروارد همگانی", callback_data="admin:broadcast"))
+
     kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
     return kb
 
@@ -1035,6 +1219,8 @@ def show_payment_method_selection(target, uid, context_data):
         kb.add(types.InlineKeyboardButton("💎 ارز دیجیتال", callback_data="pm:crypto"))
     if is_gateway_available("tetrapay", uid):
         kb.add(types.InlineKeyboardButton("🏦 پرداخت آنلاین (TetraPay)", callback_data="pm:tetrapay"))
+    if is_gateway_available("swapwallet", uid):
+        kb.add(types.InlineKeyboardButton("💎 پرداخت با سواپ ولت", callback_data="pm:swapwallet"))
     kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
 
     user = get_user(uid)
@@ -1298,7 +1484,7 @@ def _dispatch_callback(call, uid, data):
         return
 
     if data.startswith("agency:approve:"):
-        if not is_admin(uid):
+        if not is_admin(uid) or not admin_has_perm(uid, "agency"):
             bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
             return
         target_uid = int(data.split(":")[2])
@@ -1333,7 +1519,7 @@ def _dispatch_callback(call, uid, data):
         return
 
     if data.startswith("agency:reject:"):
-        if not is_admin(uid):
+        if not is_admin(uid) or not admin_has_perm(uid, "agency"):
             bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
             return
         target_uid = int(data.split(":")[2])
@@ -1422,6 +1608,8 @@ def _dispatch_callback(call, uid, data):
             kb.add(types.InlineKeyboardButton("💎 ارز دیجیتال", callback_data=f"rpay:crypto:{purchase_id}:{package_id}"))
         if is_gateway_available("tetrapay", uid):
             kb.add(types.InlineKeyboardButton("🏦 پرداخت آنلاین (TetraPay)", callback_data=f"rpay:tetrapay:{purchase_id}:{package_id}"))
+        if is_gateway_available("swapwallet", uid):
+            kb.add(types.InlineKeyboardButton("💎 پرداخت با سواپ ولت", callback_data=f"rpay:swapwallet:{purchase_id}:{package_id}"))
         kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"renew:{purchase_id}"))
         bot.answer_callback_query(call.id)
         send_or_edit(call, text, kb)
@@ -1515,6 +1703,97 @@ def _dispatch_callback(call, uid, data):
         show_crypto_selection(call, amount=price)
         return
 
+    if data.startswith("rpay:swapwallet:verify:"):
+        payment_id = int(data.split(":")[3])
+        payment = get_payment(payment_id)
+        if not payment or payment["user_id"] != uid:
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        if payment["status"] != "pending":
+            bot.answer_callback_query(call.id, "این پرداخت قبلاً پردازش شده.", show_alert=True)
+            return
+        invoice_id = payment["receipt_text"]
+        success, inv = check_swapwallet_invoice(invoice_id)
+        if not success:
+            bot.answer_callback_query(call.id, "خطا در بررسی وضعیت فاکتور.", show_alert=True)
+            return
+        if inv.get("status") == "PAID":
+            complete_payment(payment_id)
+            package_row = get_package(payment["package_id"])
+            config_id   = payment["config_id"]
+            with get_conn() as conn:
+                row = conn.execute("SELECT purchase_id FROM configs WHERE id=?", (config_id,)).fetchone()
+            purchase_id = row["purchase_id"] if row else 0
+            item = get_purchase(purchase_id) if purchase_id else None
+            bot.answer_callback_query(call.id, "✅ پرداخت تأیید شد!")
+            send_or_edit(call,
+                "✅ <b>درخواست تمدید ارسال شد</b>\n\n"
+                "🔄 درخواست تمدید سرویس شما با موفقیت ثبت و برای پشتیبانی ارسال شد.\n"
+                "⏳ لطفاً کمی صبر کنید، پس از انجام تمدید به شما اطلاع داده خواهد شد.\n\n"
+                "🙏 از صبر و شکیبایی شما متشکریم.",
+                back_button("main"))
+            if item:
+                admin_renewal_notify(uid, item, package_row, payment["amount"], "SwapWallet")
+            state_clear(uid)
+        else:
+            bot.answer_callback_query(call.id, "❌ پرداخت هنوز تأیید نشده. لطفاً ابتدا از سواپ ولت پرداخت را انجام دهید.", show_alert=True)
+        return
+
+    if data.startswith("rpay:swapwallet:"):
+        parts = data.split(":")
+        purchase_id = int(parts[2])
+        package_id  = int(parts[3])
+        item = get_purchase(purchase_id)
+        package_row = get_package(package_id)
+        if not item or item["user_id"] != uid:
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        if not package_row:
+            bot.answer_callback_query(call.id, "پکیج یافت نشد.", show_alert=True)
+            return
+        price    = get_effective_price(uid, package_row)
+        order_id = f"rnw-{uid}-{package_id}-{int(datetime.now().timestamp())}"
+        success, result = create_swapwallet_invoice(price, order_id, f"تمدید {package_row['name']}")
+        if not success:
+            bot.answer_callback_query(call.id, "خطا در ایجاد فاکتور سواپ ولت.", show_alert=True)
+            return
+        invoice_id     = result.get("id", "")
+        wallet_address = result.get("walletAddress", "")
+        links          = result.get("links", [])
+        usd_val        = result.get("amount", {}).get("usdValue", {})
+        usd_amount     = usd_val.get("number", "")
+        usd_unit       = usd_val.get("unit", "USDT")
+        payment_id = create_payment("renewal", uid, package_id, price, "swapwallet", status="pending",
+                                     config_id=item["config_id"])
+        with get_conn() as conn:
+            conn.execute("UPDATE payments SET receipt_text=? WHERE id=?", (invoice_id, payment_id))
+        state_set(uid, "await_renewal_swapwallet_verify", payment_id=payment_id, invoice_id=invoice_id,
+                  purchase_id=purchase_id)
+        text = (
+            "💎 <b>پرداخت با سواپ ولت (تمدید)</b>\n\n"
+            "⚠️ <b>راهنما:</b>\n"
+            "۱. ربات <a href='https://t.me/SwapWalletBot'>@SwapWalletBot</a> را استارت کنید\n"
+            "۲. احراز هویت انجام دهید\n"
+            "۳. کیف پول خود را به مقدار لازم شارژ کنید\n"
+            "۴. روی دکمه «پرداخت» بزنید تا مبلغ از کیف پولتان کسر شود\n\n"
+            f"💰 مبلغ: <b>{fmt_price(price)}</b> تومان\n"
+            f"💵 معادل: <b>{esc(usd_amount)} {esc(usd_unit)}</b>\n\n"
+            f"📬 آدرس کیف پول:\n<code>{esc(wallet_address)}</code>\n\n"
+            "پس از پرداخت، دکمه «✅ بررسی پرداخت» را بزنید."
+        )
+        kb = types.InlineKeyboardMarkup()
+        for link in links:
+            link_name = link.get("name", "")
+            link_url  = link.get("url", "")
+            if link_url:
+                btn_label = "💳 پرداخت از سواپ ولت" if link_name == "SWAP_WALLET" else f"🔗 {esc(link_name)}"
+                kb.add(types.InlineKeyboardButton(btn_label, url=link_url))
+        kb.add(types.InlineKeyboardButton("✅ بررسی پرداخت", callback_data=f"rpay:swapwallet:verify:{payment_id}"))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, text, kb)
+        return
+
     if data.startswith("rpay:tetrapay:"):
         parts = data.split(":")
         purchase_id = int(parts[2])
@@ -1594,7 +1873,7 @@ def _dispatch_callback(call, uid, data):
 
     # ── Admin: Confirm renewal ────────────────────────────────────────────────
     if data.startswith("renew:confirm:"):
-        if not is_admin(uid):
+        if not admin_has_perm(uid, "approve_renewal"):
             bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
             return
         parts = data.split(":")
@@ -1705,6 +1984,8 @@ def _dispatch_callback(call, uid, data):
             kb.add(types.InlineKeyboardButton("💎 ارز دیجیتال", callback_data=f"pay:crypto:{package_id}"))
         if is_gateway_available("tetrapay", uid):
             kb.add(types.InlineKeyboardButton("🏦 پرداخت آنلاین (TetraPay)", callback_data=f"pay:tetrapay:{package_id}"))
+        if is_gateway_available("swapwallet", uid):
+            kb.add(types.InlineKeyboardButton("💎 پرداخت با سواپ ولت", callback_data=f"pay:swapwallet:{package_id}"))
         kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"buy:t:{package_row['type_id']}"))
         bot.answer_callback_query(call.id)
         send_or_edit(call, text, kb)
@@ -1829,6 +2110,95 @@ def _dispatch_callback(call, uid, data):
     if data == "pm:back":
         bot.answer_callback_query(call.id)
         show_main_menu(call)
+        return
+
+    # ── SwapWallet ────────────────────────────────────────────────────────────
+    if data.startswith("pay:swapwallet:verify:"):
+        payment_id = int(data.split(":")[3])
+        payment = get_payment(payment_id)
+        if not payment or payment["user_id"] != uid:
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        if payment["status"] != "pending":
+            bot.answer_callback_query(call.id, "این پرداخت قبلاً پردازش شده.", show_alert=True)
+            return
+        invoice_id = payment["receipt_text"]
+        success, inv = check_swapwallet_invoice(invoice_id)
+        if not success:
+            bot.answer_callback_query(call.id, "خطا در بررسی وضعیت فاکتور.", show_alert=True)
+            return
+        if inv.get("status") == "PAID":
+            if payment["kind"] == "wallet_charge":
+                update_balance(uid, payment["amount"])
+                complete_payment(payment_id)
+                bot.answer_callback_query(call.id, "✅ پرداخت تأیید شد!")
+                send_or_edit(call, f"✅ پرداخت شما تأیید و کیف پول شارژ شد.\n\n💰 مبلغ: {fmt_price(payment['amount'])} تومان", back_button("main"))
+                state_clear(uid)
+            else:
+                config_id  = payment["config_id"]
+                package_id = payment["package_id"]
+                package_row = get_package(package_id)
+                if not config_id:
+                    config_id = reserve_first_config(package_id, payment_id)
+                if not config_id:
+                    bot.answer_callback_query(call.id, "پرداخت تأیید شد اما کانفیگ موجود نیست. با پشتیبانی تماس بگیرید.", show_alert=True)
+                    return
+                purchase_id = assign_config_to_user(config_id, uid, package_id, payment["amount"], "swapwallet", is_test=0)
+                complete_payment(payment_id)
+                bot.answer_callback_query(call.id, "✅ پرداخت تأیید شد!")
+                send_or_edit(call, "✅ پرداخت شما تأیید شد و سرویس آماده است.", back_button("main"))
+                deliver_purchase_message(call.message.chat.id, purchase_id)
+                admin_purchase_notify("SwapWallet", get_user(uid), package_row)
+                state_clear(uid)
+        else:
+            bot.answer_callback_query(call.id, "❌ پرداخت هنوز تأیید نشده. لطفاً ابتدا از سواپ ولت پرداخت را انجام دهید.", show_alert=True)
+        return
+
+    if data.startswith("pay:swapwallet:"):
+        package_id  = int(data.split(":")[2])
+        package_row = get_package(package_id)
+        if not package_row or package_row["stock"] <= 0:
+            bot.answer_callback_query(call.id, "موجودی این پکیج تمام شده است.", show_alert=True)
+            return
+        price    = get_effective_price(uid, package_row)
+        order_id = f"cfg-{uid}-{package_id}-{int(datetime.now().timestamp())}"
+        success, result = create_swapwallet_invoice(price, order_id, f"خرید {package_row['name']}")
+        if not success:
+            bot.answer_callback_query(call.id, "خطا در ایجاد فاکتور سواپ ولت.", show_alert=True)
+            return
+        invoice_id     = result.get("id", "")
+        wallet_address = result.get("walletAddress", "")
+        links          = result.get("links", [])
+        usd_val        = result.get("amount", {}).get("usdValue", {})
+        usd_amount     = usd_val.get("number", "")
+        usd_unit       = usd_val.get("unit", "USDT")
+        payment_id = create_payment("config_purchase", uid, package_id, price, "swapwallet", status="pending")
+        with get_conn() as conn:
+            conn.execute("UPDATE payments SET receipt_text=? WHERE id=?", (invoice_id, payment_id))
+        state_set(uid, "await_swapwallet_verify", payment_id=payment_id, invoice_id=invoice_id)
+        text = (
+            "💎 <b>پرداخت با سواپ ولت</b>\n\n"
+            "⚠️ <b>راهنما:</b>\n"
+            "۱. ربات <a href='https://t.me/SwapWalletBot'>@SwapWalletBot</a> را استارت کنید\n"
+            "۲. احراز هویت انجام دهید\n"
+            "۳. کیف پول خود را به مقدار لازم شارژ کنید\n"
+            "۴. روی دکمه «پرداخت» بزنید تا مبلغ از کیف پولتان کسر شود\n\n"
+            f"💰 مبلغ: <b>{fmt_price(price)}</b> تومان\n"
+            f"💵 معادل: <b>{esc(usd_amount)} {esc(usd_unit)}</b>\n\n"
+            f"📬 آدرس کیف پول:\n<code>{esc(wallet_address)}</code>\n\n"
+            "پس از پرداخت، دکمه «✅ بررسی پرداخت» را بزنید."
+        )
+        kb = types.InlineKeyboardMarkup()
+        for link in links:
+            link_name = link.get("name", "")
+            link_url  = link.get("url", "")
+            if link_url:
+                btn_label = "💳 پرداخت از سواپ ولت" if link_name == "SWAP_WALLET" else f"🔗 {esc(link_name)}"
+                kb.add(types.InlineKeyboardButton(btn_label, url=link_url))
+        kb.add(types.InlineKeyboardButton("✅ بررسی پرداخت", callback_data=f"pay:swapwallet:verify:{payment_id}"))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, text, kb)
         return
 
     # ── TetraPay ──────────────────────────────────────────────────────────────
@@ -2068,6 +2438,52 @@ def _dispatch_callback(call, uid, data):
         send_or_edit(call, text, kb)
         return
 
+    if data == "wallet:charge:swapwallet":
+        sd     = state_data(uid)
+        amount = sd.get("amount")
+        if not amount:
+            bot.answer_callback_query(call.id, "ابتدا مبلغ را وارد کنید.", show_alert=True)
+            return
+        order_id = f"wallet-{uid}-{int(datetime.now().timestamp())}"
+        success, result = create_swapwallet_invoice(amount, order_id, "شارژ کیف پول")
+        if not success:
+            bot.answer_callback_query(call.id, "خطا در ایجاد فاکتور سواپ ولت.", show_alert=True)
+            return
+        invoice_id     = result.get("id", "")
+        wallet_address = result.get("walletAddress", "")
+        links          = result.get("links", [])
+        usd_val        = result.get("amount", {}).get("usdValue", {})
+        usd_amount     = usd_val.get("number", "")
+        usd_unit       = usd_val.get("unit", "USDT")
+        payment_id = create_payment("wallet_charge", uid, None, amount, "swapwallet", status="pending")
+        with get_conn() as conn:
+            conn.execute("UPDATE payments SET receipt_text=? WHERE id=?", (invoice_id, payment_id))
+        state_set(uid, "await_swapwallet_verify", payment_id=payment_id, invoice_id=invoice_id)
+        text = (
+            "💎 <b>شارژ کیف پول - پرداخت با سواپ ولت</b>\n\n"
+            "⚠️ <b>راهنما:</b>\n"
+            "۱. ربات <a href='https://t.me/SwapWalletBot'>@SwapWalletBot</a> را استارت کنید\n"
+            "۲. احراز هویت انجام دهید\n"
+            "۳. کیف پول خود را شارژ کنید\n"
+            "۴. روی دکمه «پرداخت» بزنید تا مبلغ از کیف پولتان کسر شود\n\n"
+            f"💰 مبلغ: <b>{fmt_price(amount)}</b> تومان\n"
+            f"💵 معادل: <b>{esc(usd_amount)} {esc(usd_unit)}</b>\n\n"
+            f"📬 آدرس کیف پول:\n<code>{esc(wallet_address)}</code>\n\n"
+            "پس از پرداخت، دکمه «✅ بررسی پرداخت» را بزنید."
+        )
+        kb = types.InlineKeyboardMarkup()
+        for link in links:
+            link_name = link.get("name", "")
+            link_url  = link.get("url", "")
+            if link_url:
+                btn_label = "💳 پرداخت از سواپ ولت" if link_name == "SWAP_WALLET" else f"🔗 {esc(link_name)}"
+                kb.add(types.InlineKeyboardButton(btn_label, url=link_url))
+        kb.add(types.InlineKeyboardButton("✅ بررسی پرداخت", callback_data=f"pay:swapwallet:verify:{payment_id}"))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, text, kb)
+        return
+
     # ── Admin panel ────────────────────────────────────────────────────────────
     if not is_admin(uid):
         # Non-admin shouldn't reach admin callbacks, just ignore
@@ -2086,11 +2502,14 @@ def _dispatch_callback(call, uid, data):
             "🌐 <a href='https://github.com/Emadhabibnia1385/ConfigFlow'>GitHub ConfigFlow</a>\n"
             "❤️ <a href='https://t.me/EmadHabibnia/4'>donate</a>"
         )
-        send_or_edit(call, text, kb_admin_panel())
+        send_or_edit(call, text, kb_admin_panel(uid))
         return
 
     # ── Admin: Types ──────────────────────────────────────────────────────────
     if data == "admin:types":
+        if not admin_has_perm(uid, "types_packages"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
         _show_admin_types(call)
         bot.answer_callback_query(call.id)
         return
@@ -2383,6 +2802,9 @@ def _dispatch_callback(call, uid, data):
 
     # ── Admin: Stock / Config management ─────────────────────────────────────
     if data == "admin:stock":
+        if not (admin_has_perm(uid, "view_configs") or admin_has_perm(uid, "register_config") or admin_has_perm(uid, "manage_configs")):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
         _show_admin_stock(call)
         bot.answer_callback_query(call.id)
         return
@@ -2637,8 +3059,185 @@ def _dispatch_callback(call, uid, data):
 
     # ── Admin: Users ──────────────────────────────────────────────────────────
     if data == "admin:users":
+        if not (admin_has_perm(uid, "view_users") or admin_has_perm(uid, "full_users") or
+                any(admin_has_perm(uid, p) for p in PERM_USER_FULL)):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
         _show_admin_users_list(call)
         bot.answer_callback_query(call.id)
+        return
+
+    # ── Admin: User search ────────────────────────────────────────────────────
+    if data == "adm:usr:search":
+        state_set(uid, "admin_user_search")
+        bot.answer_callback_query(call.id)
+        send_or_edit(call,
+            "🔍 <b>جستجوی کاربر</b>\n\n"
+            "می‌توانید بر اساس موارد زیر جستجو کنید:\n"
+            "• <b>آیدی عددی</b> (مثال: <code>123456789</code>)\n"
+            "• <b>نام کاربری</b> (مثال: <code>@username</code>)\n"
+            "• <b>نام اکانت</b> (مثال: <code>علی</code>)\n\n"
+            "مقدار جستجو را ارسال کنید:",
+            back_button("admin:users"))
+        return
+
+    # ── Admin: Admins management ──────────────────────────────────────────────
+    if data == "admin:admins":
+        if uid not in ADMIN_IDS:
+            bot.answer_callback_query(call.id, "فقط اونر می‌تواند ادمین‌ها را مدیریت کند.", show_alert=True)
+            return
+        _show_admin_admins_panel(call)
+        bot.answer_callback_query(call.id)
+        return
+
+    if data == "adm:mgr:add":
+        if uid not in ADMIN_IDS:
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        state_set(uid, "admin_mgr_await_id")
+        bot.answer_callback_query(call.id)
+        send_or_edit(call,
+            "➕ <b>افزودن ادمین جدید</b>\n\n"
+            "آیدی عددی یا یوزرنیم کاربر مورد نظر را ارسال کنید:\n\n"
+            "مثال: <code>123456789</code> یا <code>@username</code>",
+            back_button("admin:admins"))
+        return
+
+    if data.startswith("adm:mgr:del:"):
+        if uid not in ADMIN_IDS:
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        target_id = int(data.split(":")[3])
+        if target_id in ADMIN_IDS:
+            bot.answer_callback_query(call.id, "اونرها را نمی‌توان حذف کرد.", show_alert=True)
+            return
+        remove_admin_user(target_id)
+        bot.answer_callback_query(call.id, "✅ ادمین حذف شد.")
+        _show_admin_admins_panel(call)
+        return
+
+    if data.startswith("adm:mgr:v:"):
+        if uid not in ADMIN_IDS:
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        target_id = int(data.split(":")[3])
+        row = get_admin_user(target_id)
+        user_row = get_user(target_id)
+        if not row:
+            bot.answer_callback_query(call.id, "ادمین یافت نشد.", show_alert=True)
+            return
+        perms = json.loads(row["permissions"] or "{}")
+        perm_lines = "\n".join(
+            f"{'✅' if perms.get(k) or perms.get('full') else '☐'} {lbl}"
+            for k, lbl in ADMIN_PERMS if k != "full"
+        )
+        name = user_row["full_name"] if user_row else f"کاربر {target_id}"
+        text = (
+            f"👮 <b>اطلاعات ادمین</b>\n\n"
+            f"👤 نام: {esc(name)}\n"
+            f"🆔 آیدی: <code>{target_id}</code>\n"
+            f"📅 افزوده شده: {esc(row['added_at'])}\n\n"
+            f"🔑 <b>دسترسی‌ها:</b>\n{perm_lines}"
+        )
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("🗑 حذف ادمین", callback_data=f"adm:mgr:del:{target_id}"))
+        kb.add(types.InlineKeyboardButton("✏️ ویرایش دسترسی‌ها", callback_data=f"adm:mgr:edit:{target_id}"))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:admins"))
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, text, kb)
+        return
+
+    if data.startswith("adm:mgr:edit:"):
+        if uid not in ADMIN_IDS:
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        target_id = int(data.split(":")[3])
+        row = get_admin_user(target_id)
+        if not row:
+            bot.answer_callback_query(call.id, "ادمین یافت نشد.", show_alert=True)
+            return
+        perms = json.loads(row["permissions"] or "{}")
+        state_set(uid, "admin_mgr_select_perms", target_user_id=target_id, perms=json.dumps(perms))
+        bot.answer_callback_query(call.id)
+        _show_perm_selection(call, uid, target_id, perms, edit_mode=True)
+        return
+
+    if data.startswith("adm:mgr:pt:"):
+        if uid not in ADMIN_IDS:
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        perm_key = data[len("adm:mgr:pt:"):]
+        sd2 = state_data(uid)
+        if state_name(uid) != "admin_mgr_select_perms" or not sd2:
+            bot.answer_callback_query(call.id, "جلسه منقضی شده است.", show_alert=True)
+            return
+        target_id = sd2.get("target_user_id")
+        perms = json.loads(sd2.get("perms", "{}"))
+        current = bool(perms.get(perm_key))
+
+        if perm_key == "full":
+            if not current:
+                perms = {k: True for k, _ in ADMIN_PERMS}
+            else:
+                perms = {}
+        elif perm_key == "full_users":
+            if not current:
+                perms["full_users"] = True
+                perms["view_users"] = False
+                for p in PERM_USER_FULL:
+                    perms[p] = True
+            else:
+                perms["full_users"] = False
+                for p in PERM_USER_FULL:
+                    perms[p] = False
+        elif perm_key == "view_users":
+            if not current:
+                perms["view_users"] = True
+                perms["full_users"] = False
+                for p in PERM_USER_FULL:
+                    perms[p] = False
+            else:
+                perms["view_users"] = False
+        else:
+            perms[perm_key] = not current
+            if perm_key in PERM_USER_FULL and perms.get(perm_key):
+                perms["view_users"] = False
+            if all(perms.get(p) for p in PERM_USER_FULL):
+                perms["full_users"] = True
+                perms["view_users"] = False
+            if all(perms.get(k) for k, _ in ADMIN_PERMS if k != "full"):
+                perms["full"] = True
+
+        state_set(uid, "admin_mgr_select_perms",
+                  target_user_id=target_id, perms=json.dumps(perms))
+        bot.answer_callback_query(call.id)
+        edit_mode = sd2.get("edit_mode", False)
+        _show_perm_selection(call, uid, target_id, perms, edit_mode=edit_mode)
+        return
+
+    if data == "adm:mgr:confirm":
+        if uid not in ADMIN_IDS:
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        sd2 = state_data(uid)
+        if state_name(uid) != "admin_mgr_select_perms" or not sd2:
+            bot.answer_callback_query(call.id, "جلسه منقضی شده است.", show_alert=True)
+            return
+        target_id = sd2.get("target_user_id")
+        perms = json.loads(sd2.get("perms", "{}"))
+        if not any(perms.values()):
+            bot.answer_callback_query(call.id, "حداقل یک سطح دسترسی انتخاب کنید.", show_alert=True)
+            return
+        add_admin_user(target_id, uid, perms)
+        state_clear(uid)
+        bot.answer_callback_query(call.id, "✅ ادمین اضافه شد.")
+        try:
+            bot.send_message(target_id,
+                "👮 <b>شما به عنوان ادمین اضافه شدید!</b>\n\n"
+                "برای دسترسی به پنل مدیریت از دستور /start استفاده کنید.")
+        except Exception:
+            pass
+        _show_admin_admins_panel(call)
         return
 
     if data.startswith("adm:usr:"):
@@ -2860,6 +3459,9 @@ def _dispatch_callback(call, uid, data):
 
     # ── Admin: Settings ───────────────────────────────────────────────────────
     if data == "admin:settings":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
         kb = types.InlineKeyboardMarkup()
         kb.row(
             types.InlineKeyboardButton("🎧 پشتیبانی",           callback_data="adm:set:support"),
@@ -2920,7 +3522,7 @@ def _dispatch_callback(call, uid, data):
     # ── Gateway settings ──────────────────────────────────────────────────────
     if data == "adm:set:gateways":
         kb = types.InlineKeyboardMarkup()
-        for gw_key, gw_label in [("card", "💳 کارت به کارت"), ("crypto", "💎 ارز دیجیتال"), ("tetrapay", "🏦 کارت به کارت آنلاین (TetraPay)")]:
+        for gw_key, gw_label in [("card", "💳 کارت به کارت"), ("crypto", "💎 ارز دیجیتال"), ("tetrapay", "🏦 کارت به کارت آنلاین (TetraPay)"), ("swapwallet", "💎 سواپ ولت (SwapWallet)")]:
             enabled = setting_get(f"gw_{gw_key}_enabled", "0")
             status_icon = "🟢" if enabled == "1" else "🔴"
             kb.add(types.InlineKeyboardButton(f"{status_icon} {gw_label}", callback_data=f"adm:set:gw:{gw_key}"))
@@ -3082,6 +3684,71 @@ def _dispatch_callback(call, uid, data):
         state_set(uid, "admin_set_tetrapay_key")
         bot.answer_callback_query(call.id)
         send_or_edit(call, "🔑 کلید API تتراپی را ارسال کنید:", back_button("adm:set:gw:tetrapay"))
+        return
+
+    if data == "adm:set:gw:swapwallet":
+        enabled  = setting_get("gw_swapwallet_enabled", "0")
+        vis      = setting_get("gw_swapwallet_visibility", "public")
+        api_key  = setting_get("swapwallet_api_key", "")
+        username = setting_get("swapwallet_username", "")
+        enabled_label = "🟢 فعال" if enabled == "1" else "🔴 غیرفعال"
+        vis_label     = "👥 عمومی" if vis == "public" else "🔒 کاربران امن"
+        kb = types.InlineKeyboardMarkup()
+        kb.row(
+            types.InlineKeyboardButton(f"وضعیت: {enabled_label}", callback_data="adm:gw:swapwallet:toggle"),
+            types.InlineKeyboardButton(f"نمایش: {vis_label}",    callback_data="adm:gw:swapwallet:vis"),
+        )
+        kb.add(types.InlineKeyboardButton("🔑 تنظیم کلید API",             callback_data="adm:set:swapwallet_key"))
+        kb.add(types.InlineKeyboardButton("👤 نام کاربری فروشگاه",          callback_data="adm:set:swapwallet_username"))
+        if not api_key:
+            kb.add(types.InlineKeyboardButton("🌐 دریافت کلید API از سواپ ولت", url="https://swapwallet.app"))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="adm:set:gateways"))
+        key_display = f"<code>{esc(api_key[:8])}...{esc(api_key[-4:])}</code>" if api_key else "❌ <b>ثبت نشده</b>"
+        text = (
+            "💎 <b>درگاه سواپ ولت (SwapWallet)</b>\n\n"
+            f"وضعیت: {enabled_label}\n"
+            f"نمایش: {vis_label}\n\n"
+            f"👤 نام کاربری فروشگاه: <code>{esc(username or 'ثبت نشده')}</code>\n"
+            f"🔑 کلید API: {key_display}\n\n"
+            "📖 <b>راهنمای دریافت کلید API:</b>\n"
+            "۱. وارد اپلیکیشن <a href='https://swapwallet.app'>سواپ ولت</a> شوید\n"
+            "۲. پروفایل ← کلید API\n"
+            "۳. روی «ایجاد کلید جدید» کلیک کنید\n"
+            "۴. کلید را با فرمت <code>apikey-xxx</code> کپی کنید\n\n"
+            "ربات: @SwapWalletBot | سایت: swapwallet.app"
+        )
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, text, kb)
+        return
+
+    if data == "adm:gw:swapwallet:toggle":
+        enabled = setting_get("gw_swapwallet_enabled", "0")
+        setting_set("gw_swapwallet_enabled", "0" if enabled == "1" else "1")
+        bot.answer_callback_query(call.id, "تغییر یافت.")
+        _fake_call(call, "adm:set:gw:swapwallet")
+        return
+
+    if data == "adm:gw:swapwallet:vis":
+        vis = setting_get("gw_swapwallet_visibility", "public")
+        setting_set("gw_swapwallet_visibility", "secure" if vis == "public" else "public")
+        bot.answer_callback_query(call.id, "تغییر یافت.")
+        _fake_call(call, "adm:set:gw:swapwallet")
+        return
+
+    if data == "adm:set:swapwallet_key":
+        state_set(uid, "admin_set_swapwallet_key")
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, "🔑 کلید API سواپ ولت را ارسال کنید (مثال: <code>apikey-xxx...</code>):", back_button("adm:set:gw:swapwallet"))
+        return
+
+    if data == "adm:set:swapwallet_username":
+        state_set(uid, "admin_set_swapwallet_username")
+        bot.answer_callback_query(call.id)
+        current = setting_get("swapwallet_username", "")
+        send_or_edit(call,
+            f"👤 نام کاربری فروشگاه سواپ ولت را ارسال کنید.\n"
+            f"مقدار فعلی: <code>{esc(current or 'ثبت نشده')}</code>",
+            back_button("adm:set:gw:swapwallet"))
         return
 
     if data == "adm:set:payment":
@@ -3321,6 +3988,9 @@ def _dispatch_callback(call, uid, data):
 
     # ── Admin: Payment approve/reject ─────────────────────────────────────────
     if data.startswith("adm:pay:ap:"):
+        if not admin_has_perm(uid, "approve_payments"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
         payment_id = int(data.split(":")[3])
         state_set(uid, "admin_payment_approve_note", payment_id=payment_id)
         bot.answer_callback_query(call.id)
@@ -3328,6 +3998,9 @@ def _dispatch_callback(call, uid, data):
         return
 
     if data.startswith("adm:pay:rj:"):
+        if not admin_has_perm(uid, "approve_payments"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
         payment_id = int(data.split(":")[3])
         state_set(uid, "admin_payment_reject_note", payment_id=payment_id)
         bot.answer_callback_query(call.id)
@@ -3385,15 +4058,17 @@ def _show_admin_stock(call):
     send_or_edit(call, "📁 <b>کانفیگ‌ها</b>", kb)
 
 def _show_admin_users_list(call):
-    rows = get_users()
-    kb   = types.InlineKeyboardMarkup()
+    rows  = get_users()
+    total = count_all_users()
+    kb    = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🔍 جستجوی کاربر", callback_data="adm:usr:search"))
     for row in rows[:100]:
         status_icon = "🔘" if row["status"] == "safe" else "⚠️"
         agent_icon  = "🤝" if row["is_agent"] else ""
         label = f"{status_icon}{agent_icon} {row['full_name']} | {display_username(row['username'])}"
         kb.add(types.InlineKeyboardButton(label, callback_data=f"adm:usr:v:{row['user_id']}"))
     kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:panel"))
-    send_or_edit(call, "👥 <b>مدیریت کاربران</b>", kb)
+    send_or_edit(call, f"👥 <b>مدیریت کاربران</b>\n\n👤 تعداد کل کاربران: <b>{total}</b> نفر", kb)
 
 def _show_admin_user_detail(call, user_id):
     row = get_user_detail(user_id)
@@ -3568,6 +4243,8 @@ def universal_handler(message):
                 kb.add(types.InlineKeyboardButton("💎 ارز دیجیتال",       callback_data="wallet:charge:crypto"))
             if is_gateway_available("tetrapay", uid):
                 kb.add(types.InlineKeyboardButton("🏦 پرداخت آنلاین (TetraPay)", callback_data="wallet:charge:tetrapay"))
+            if is_gateway_available("swapwallet", uid):
+                kb.add(types.InlineKeyboardButton("💎 پرداخت با سواپ ولت", callback_data="wallet:charge:swapwallet"))
             kb.add(types.InlineKeyboardButton("🔙 بازگشت",            callback_data="nav:main"))
             bot.send_message(
                 uid,
@@ -3976,6 +4653,20 @@ def universal_handler(message):
             setting_set("tetrapay_api_key", val)
             state_clear(uid)
             bot.send_message(uid, "✅ کلید API تتراپی ذخیره شد.", reply_markup=back_button("adm:set:gw:tetrapay"))
+            return
+
+        if sn == "admin_set_swapwallet_key" and is_admin(uid):
+            val = (message.text or "").strip()
+            setting_set("swapwallet_api_key", val)
+            state_clear(uid)
+            bot.send_message(uid, "✅ کلید API سواپ ولت ذخیره شد.", reply_markup=back_button("adm:set:gw:swapwallet"))
+            return
+
+        if sn == "admin_set_swapwallet_username" and is_admin(uid):
+            val = (message.text or "").strip()
+            setting_set("swapwallet_username", "" if val == "-" else val)
+            state_clear(uid)
+            bot.send_message(uid, "✅ نام کاربری فروشگاه سواپ ولت ذخیره شد.", reply_markup=back_button("adm:set:gw:swapwallet"))
             return
 
         if sn == "admin_set_channel" and is_admin(uid):
