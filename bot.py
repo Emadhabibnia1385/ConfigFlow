@@ -1674,7 +1674,7 @@ def _dispatch_callback(call, uid, data):
         user = get_user(uid)
         for p in packages:
             price = get_effective_price(uid, p)
-            title = f"{p['name']} | {p['volume_gb']}GB | {p['duration_days']} روز | {fmt_price(price)} ت"
+            title = f"{p['name']} | {p['volume_gb']} گیگ | {p['duration_days']} روز | {fmt_price(price)} ت"
             kb.add(types.InlineKeyboardButton(title, callback_data=f"renew:p:{purchase_id}:{p['id']}"))
         kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"mycfg:{purchase_id}"))
         bot.answer_callback_query(call.id)
@@ -2071,7 +2071,7 @@ def _dispatch_callback(call, uid, data):
         for p in packages:
             price = get_effective_price(uid, p)
             stock_tag = "" if p["stock"] > 0 else " ⏳"
-            title = f"{p['name']}{stock_tag} | {p['volume_gb']}GB | {p['duration_days']} روز | {fmt_price(price)} ت"
+            title = f"{p['name']}{stock_tag} | {p['volume_gb']} گیگ | {p['duration_days']} روز | {fmt_price(price)} ت"
             kb.add(types.InlineKeyboardButton(title, callback_data=f"buy:p:{p['id']}"))
         kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="buy:start"))
         bot.answer_callback_query(call.id)
@@ -2844,7 +2844,7 @@ def _dispatch_callback(call, uid, data):
         kb      = types.InlineKeyboardMarkup()
         for p in packs:
             kb.add(types.InlineKeyboardButton(
-                f"{p['name']} | {p['volume_gb']}GB | {p['duration_days']}روز",
+                f"{p['name']} | {p['volume_gb']} گیگ | {p['duration_days']} روز",
                 callback_data=f"adm:cfg:p:{p['id']}"
             ))
         kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:add_config"))
