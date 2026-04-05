@@ -214,7 +214,7 @@ ConfigFlow از **۵ روش پرداخت** پشتیبانی می‌کند:
 ### نصب خودکار روی سرور (پیشنهادی) ⚡
 
 ```bash
-bash <(curl -s https://raw.githubusercontent.com/Emadhabibnia1385/ConfigFlow/main/install.sh)
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/Emadhabibnia1385/ConfigFlow/main/install.sh)
 ```
 
 اسکریپت به‌صورت خودکار:
@@ -252,7 +252,7 @@ DB_NAME=ConfigFlow.db
 
 ```bash
 # اجرای ربات
-python3 bot.py
+python3 main.py
 ```
 
 ---
@@ -261,110 +261,112 @@ python3 bot.py
 
 ```
 ConfigFlow/
-├── bot.py               # فایل اصلی ربات (تمام منطق)
-├── requirements.txt     # وابستگی‌های Python
-├── env.example          # نمونه فایل محیطی
-├── install.sh           # اسکریپت نصب خودکار
-├── .env                 # تنظیمات (ساخته می‌شود)
-└── ConfigFlow.db        # دیتابیس SQLite (ساخته می‌شود)
+├── main.py                  # نقطه ورود — ربات را راه‌اندازی می‌کند
+├── api.py                   # Flask API — سرویس Worker API
+├── worker.py                # ورکر سرور ایران (اتصال به 3x-ui)
+├── requirements.txt         # وابستگی‌های Python
+├── env.example              # نمونه فایل محیطی ربات
+├── config.env.example       # نمونه فایل محیطی ورکر
+├── install.sh               # اسکریپت نصب خودکار
+├── .env                     # تنظیمات ربات (ساخته می‌شود)
+│
+└── bot/                     # پکیج اصلی ربات
+    ├── __init__.py          # راه‌اندازی هندلرها
+    ├── config.py            # تمام ثابت‌ها و تنظیمات محیطی
+    ├── bot_instance.py      # نمونه TeleBot و USER_STATE
+    ├── helpers.py           # توابع کمکی (esc، fmt_price، is_admin، ...)
+    ├── db.py                # تمام توابع دیتابیس SQLite
+    ├── payments.py          # منطق انتخاب و پردازش پرداخت
+    │
+    ├── gateways/            # یکپارچه‌سازی درگاه‌های پرداخت
+    │   ├── __init__.py
+    │   ├── base.py          # بررسی دسترسی درگاه‌ها
+    │   ├── crypto.py        # دریافت قیمت‌های ارز دیجیتال
+    │   ├── tetrapay.py      # ایجاد و تأیید سفارش TetraPay
+    │   └── swapwallet.py    # ایجاد، بررسی و نمایش صفحه SwapWallet
+    │
+    ├── ui/                  # لایه رابط کاربری
+    │   ├── __init__.py
+    │   ├── helpers.py       # send_or_edit، set_bot_commands، قفل کانال
+    │   ├── keyboards.py     # منوهای اینلاین (kb_main، kb_admin_panel)
+    │   ├── menus.py         # نمایش منوهای اصلی (پروفایل، خرید، ...)
+    │   └── notifications.py # اطلاع‌رسانی خرید، تحویل کانفیگ، QR Code
+    │
+    ├── admin/               # ابزارهای پنل ادمین
+    │   ├── __init__.py
+    │   ├── renderers.py     # نمایش صفحات ادمین (کاربران، پکیج‌ها، ...)
+    │   └── backup.py        # بکاپ دستی و خودکار دیتابیس
+    │
+    └── handlers/            # هندلرهای تلگرام
+        ├── __init__.py      # ثبت تمام هندلرها
+        ├── start.py         # دستور /start
+        ├── callbacks.py     # پردازش Callback Query (on_callback)
+        └── messages.py      # پردازش پیام‌های متنی (universal_handler)
 ```
-
-### وابستگی‌ها
-
-| پکیج | کاربرد |
-|-------|--------|
-| `pyTelegramBotAPI` | فریم‌ورک ربات تلگرام |
-| `qrcode` | ساخت QR Code از کانفیگ |
-| `pillow` | پردازش تصویر QR |
-| `python-dotenv` | خواندن فایل `.env` |
 
 ---
 
-## 🐛 رفع مشکلات رایج
+## 🔧 متغیرهای محیطی
 
-<details>
-<summary><b>ربات اجرا نمی‌شود</b></summary>
+### `.env` — تنظیمات ربات
+
+| متغیر | توضیحات | مثال |
+|-------|---------|------|
+| `BOT_TOKEN` | توکن ربات از @BotFather | `123456789:ABC...` |
+| `ADMIN_IDS` | آیدی عددی ادمین‌ها (با کاما جدا) | `111,222,333` |
+| `DB_NAME` | نام فایل دیتابیس | `ConfigFlow.db` |
+
+### `config.env` — تنظیمات ورکر ایران
+
+| متغیر | توضیحات | پیش‌فرض |
+|-------|---------|---------|
+| `BOT_API_URL` | آدرس Bot API سرور خارج | — |
+| `WORKER_API_KEY` | کلید مشترک امنیتی (حداقل ۱۶ کاراکتر) | — |
+| `PANEL_IP` | آدرس IP پنل 3x-ui | `127.0.0.1` |
+| `PANEL_PORT` | پورت پنل | `2053` |
+| `PANEL_USERNAME` | نام کاربری پنل | — |
+| `PANEL_PASSWORD` | رمز عبور پنل | — |
+| `INBOUND_ID` | شناسه Inbound در پنل | `1` |
+| `PROTOCOL` | پروتکل VPN | `vless` |
+| `POLL_INTERVAL` | فاصله بررسی job ها (ثانیه) | `10` |
+
+---
+
+## 🖥️ اجرا
 
 ```bash
-# بررسی لاگ
-journalctl -u configflow -n 50
+# اجرای مستقیم ربات
+python3 main.py
 
-# اجرای دستی برای مشاهده خطا
-cd /opt/configflow
-python3 bot.py
+# اجرای ورکر ایران (روی سرور ایران)
+python3 worker.py
+
+# اجرای API (برای ورکر)
+python3 api.py
 ```
 
-</details>
+---
 
-<details>
-<summary><b>خطای توکن نامعتبر</b></summary>
+## 🔌 وابستگی‌ها
 
-- فایل `.env` را بررسی کنید
-- مطمئن شوید توکن بدون فاصله اضافی است
-- توکن جدید از [@BotFather](https://t.me/BotFather) بگیرید
-
-</details>
-
-<details>
-<summary><b>درگاه TetraPay کار نمی‌کند</b></summary>
-
-- کلید API را از ربات [@Tetra_Pay](https://t.me/Tetra_Pay) دریافت و در تنظیمات وارد کنید
-- وضعیت فعال بودن درگاه را بررسی کنید
-
-</details>
-
-<details>
-<summary><b>بکاپ خودکار ارسال نمی‌شود</b></summary>
-
-- آیدی عددی کانال یا کاربر مقصد را بررسی کنید
-- مطمئن شوید ربات در کانال مقصد ادمین است
-- بازه زمانی را تنظیم کنید
-
-</details>
+| پکیج | کاربرد |
+|------|---------|
+| `pyTelegramBotAPI` | فریم‌ورک ربات تلگرام |
+| `qrcode` + `pillow` | تولید QR Code برای کانفیگ |
+| `python-dotenv` | خواندن فایل `.env` |
+| `flask` | Web API برای ورکر |
+| `requests` | ارتباط با APIهای خارجی |
 
 ---
 
-## 🤝 مشارکت در پروژه
+## 🤝 پشتیبانی
 
-مشارکت شما در بهبود ConfigFlow خوشامد است!
-
-1. پروژه را Fork کنید
-2. یک Branch جدید بسازید (`git checkout -b feature/amazing-feature`)
-3. تغییرات خود را Commit کنید (`git commit -m 'Add amazing feature'`)
-4. به Branch خود Push کنید (`git push origin feature/amazing-feature`)
-5. یک Pull Request باز کنید
+- **Developer:** [@EmadHabibnia](https://t.me/EmadHabibnia)
+- **Channel:** [@Emadhabibnia](https://t.me/Emadhabibnia)
+- **GitHub:** [Emadhabibnia1385/ConfigFlow](https://github.com/Emadhabibnia1385/ConfigFlow)
 
 ---
 
-## 📞 پشتیبانی
+## 📄 لایسنس
 
-<div align="center">
-
-### راه‌های ارتباطی
-
-[![Telegram](https://img.shields.io/badge/Telegram-@Emad__Habibnia-blue?style=for-the-badge&logo=telegram)](https://t.me/Emad_Habibnia)
-[![GitHub](https://img.shields.io/badge/GitHub-Emadhabibnia1385-black?style=for-the-badge&logo=github)](https://github.com/Emadhabibnia1385)
-
-</div>
-
-- 💬 **تلگرام:** [@Emad_Habibnia](https://t.me/Emad_Habibnia)
-- 🐙 **GitHub:** [Emadhabibnia1385](https://github.com/Emadhabibnia1385)
-
----
-
-## ⭐ حمایت از پروژه
-
-اگر ConfigFlow برای شما مفید بود:
-
-- ⭐ به پروژه Star بدهید
-- 🔀 آن را Fork کنید
-- 📢 در کانال‌های خود معرفی کنید
-- 💡 باگ‌ها و ایده‌های خود را گزارش دهید
-
----
-
-<div align="center">
-
-**ساخته شده با ❤️ توسط [Emad Habibnia](https://t.me/Emad_Habibnia)**
-
-</div>
+این پروژه تحت [MIT License](LICENSE) منتشر شده است.

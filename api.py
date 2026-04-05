@@ -85,7 +85,7 @@ def get_pending_jobs():
             "SELECT j.id, j.job_uuid, j.user_id, j.panel_id, j.panel_package_id,"
             " j.status, j.retry_count, j.created_at,"
             " p.ip, p.port, p.patch, p.username, p.password,"
-            " pp.name AS pkg_name, pp.volume_gb, pp.duration_days"
+            " pp.name AS pkg_name, pp.volume_gb, pp.duration_days, pp.inbound_id"
             " FROM xui_jobs j"
             " JOIN panels p  ON p.id=j.panel_id"
             " JOIN panel_packages pp ON pp.id=j.panel_package_id"

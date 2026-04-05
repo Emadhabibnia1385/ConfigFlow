@@ -269,9 +269,10 @@ def process_job(job, xui):
     dur_days = job["duration_days"]
     panel_ip = job.get("ip", PANEL_IP)
     panel_port = job.get("port", PANEL_PORT)
+    inbound_id = int(job.get("inbound_id") or INBOUND_ID)
 
-    log.info("Processing job #%d  uuid=%s  pkg=%s %dGB/%dd",
-             job_id, job_uuid[:8], pkg_name, vol_gb, dur_days)
+    log.info("Processing job #%d  uuid=%s  pkg=%s %dGB/%dd  inbound#%d",
+             job_id, job_uuid[:8], pkg_name, vol_gb, dur_days, inbound_id)
 
     try:
         mark_job_processing(job_id)
@@ -282,13 +283,13 @@ def process_job(job, xui):
         client_uuid = str(uuid.uuid4())
         client_json = _build_client_json(client_uuid, pkg_name, vol_gb, dur_days)
 
-        resp = xui.add_client(INBOUND_ID, client_json)
+        resp = xui.add_client(inbound_id, client_json)
         if not resp.get("success"):
             raise RuntimeError(f"3x-ui addClient failed: {resp.get('msg', resp)}")
 
         # Build delivery link
         try:
-            inbound = xui.get_inbound(INBOUND_ID)
+            inbound = xui.get_inbound(inbound_id)
         except Exception:
             inbound = {}
 

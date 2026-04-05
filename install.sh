@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 REPO="https://github.com/Emadhabibnia1385/ConfigFlow.git"
+BRANCH="REFACTOR"
 BASE_DIR="/opt/configflow"
 BASE_SERVICE="configflow"
 DIR=""
@@ -58,9 +59,31 @@ require_cmd() {
 }
 
 install_prereqs() {
-  info "Installing prerequisites..."
-  apt-get update -y
-  apt-get install -y git python3 python3-venv python3-pip curl
+  info "Checking prerequisites..."
+
+  local need_apt=0
+  local missing_pkgs=()
+
+  command -v python3    >/dev/null 2>&1 || { need_apt=1; missing_pkgs+=(python3); }
+  command -v git        >/dev/null 2>&1 || { need_apt=1; missing_pkgs+=(git); }
+  command -v curl       >/dev/null 2>&1 || { need_apt=1; missing_pkgs+=(curl); }
+  python3 -m venv --help >/dev/null 2>&1 || { need_apt=1; missing_pkgs+=(python3-venv python3-pip); }
+
+  if [[ $need_apt -eq 0 ]]; then
+    ok "All prerequisites already installed — skipping apt-get"
+    return
+  fi
+
+  info "Installing missing: ${missing_pkgs[*]}"
+  apt-get update -y || {
+    echo -e "${Y}⚠ apt-get update failed (no internet or blocked mirror). Trying to install anyway...${N}"
+  }
+  apt-get install -y "${missing_pkgs[@]}" || {
+    echo -e "${Y}⚠ apt-get install failed. Checking if minimum requirements exist...${N}"
+    command -v python3 >/dev/null 2>&1 || err "python3 is required but could not be installed."
+    python3 -m venv --help >/dev/null 2>&1 || err "python3-venv is required but could not be installed."
+    ok "Minimum requirements (python3 + venv) are available — continuing."
+  }
 }
 
 clone_or_update_repo() {
@@ -72,15 +95,15 @@ clone_or_update_repo() {
     info "Repository exists. Updating..."
     cd "$DIR"
     git fetch --all --prune
-    git reset --hard origin/main
+    git reset --hard origin/${BRANCH}
   else
     rm -rf "$DIR"
     mkdir -p "$DIR"
-    git clone "$REPO" "$DIR"
+    git clone -b "$BRANCH" "$REPO" "$DIR"
     cd "$DIR"
   fi
 
-  [[ -f "$DIR/bot.py" ]] || err "bot.py not found after download. Repo content missing?"
+  [[ -f "$DIR/main.py" ]] || err "main.py not found after download. Repo content missing?"
   [[ -f "$DIR/requirements.txt" ]] || err "requirements.txt not found after download."
 }
 
@@ -90,8 +113,12 @@ setup_venv() {
     python3 -m venv "$DIR/venv"
   fi
 
-  "$DIR/venv/bin/pip" install --upgrade pip wheel
-  "$DIR/venv/bin/pip" install -r "$DIR/requirements.txt"
+  "$DIR/venv/bin/pip" install --upgrade pip wheel || true
+  "$DIR/venv/bin/pip" install -r "$DIR/requirements.txt" || {
+    echo -e "${Y}⚠ pip install failed (no internet?). Retrying with --no-deps...${N}"
+    "$DIR/venv/bin/pip" install --no-deps -r "$DIR/requirements.txt" || true
+    ok "Venv ready (some packages may be missing, but worker uses stdlib only)"
+  }
 }
 
 configure_env() {
@@ -204,7 +231,7 @@ After=network.target
 Type=simple
 WorkingDirectory=$DIR
 EnvironmentFile=$DIR/.env
-ExecStart=$DIR/venv/bin/python $DIR/bot.py
+ExecStart=$DIR/venv/bin/python $DIR/main.py
 Restart=always
 RestartSec=5
 
@@ -300,25 +327,25 @@ _install_worker_local() {
   ensure_safe_cwd
   info "Installing Iran Worker from local files in: $SCRIPT_DIR"
 
-  # Validate required files
-  local missing=0
-  for f in worker.py requirements.txt; do
-    if [[ ! -f "$SCRIPT_DIR/$f" ]]; then
-      echo -e "${R}✗ Missing file: $SCRIPT_DIR/$f${N}" >&2
-      missing=1
-    fi
-  done
-  [[ $missing -eq 0 ]] || err "Copy the required files next to install.sh and try again"
+  # Only worker.py is required — requirements are written inline
+  if [[ ! -f "$SCRIPT_DIR/worker.py" ]]; then
+    err "Missing file: $SCRIPT_DIR/worker.py — copy worker.py next to install.sh and try again"
+  fi
 
   # Install system prerequisites (python3, venv)
   install_prereqs
 
-  # Create target directory and copy files
+  # Create target directory and copy worker
   mkdir -p "$DIR"
-  for f in worker.py requirements.txt; do
-    cp -v "$SCRIPT_DIR/$f" "$DIR/$f"
-    ok "Copied $f → $DIR/$f"
-  done
+  cp -v "$SCRIPT_DIR/worker.py" "$DIR/worker.py"
+  ok "Copied worker.py → $DIR/worker.py"
+
+  # Write minimal worker requirements (no need to upload requirements.txt)
+  cat > "$DIR/requirements.txt" <<'WORKERREQS'
+python-dotenv
+WORKERREQS
+  ok "Created worker requirements.txt"
+
   # Copy config.env.example if present
   [[ -f "$SCRIPT_DIR/config.env.example" ]] && cp "$SCRIPT_DIR/config.env.example" "$DIR/config.env.example" || true
 
