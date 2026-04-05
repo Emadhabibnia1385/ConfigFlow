@@ -624,6 +624,27 @@ def universal_handler(message):
                 bot.send_message(uid, f"❌ خطا در بازیابی بکاپ: {esc(str(e))}", reply_markup=back_button("admin:backup"))
             return
 
+        # ── Admin: User Search ────────────────────────────────────────────────
+        if sn == "admin_user_search" and is_admin(uid):
+            query_text = (message.text or "").strip()
+            if not query_text:
+                bot.send_message(uid, "⚠️ متن جستجو را ارسال کنید.")
+                return
+            state_clear(uid)
+            rows = search_users(query_text)
+            if not rows:
+                bot.send_message(uid, "❌ کاربری یافت نشد.", reply_markup=back_button("admin:users"))
+                return
+            kb = types.InlineKeyboardMarkup()
+            for row in rows:
+                status_icon = "🔘" if row["status"] == "safe" else "⚠️"
+                agent_icon  = "🤝" if row["is_agent"] else ""
+                label = f"{status_icon}{agent_icon} {row['full_name']} | @{row['username'] or str(row['user_id'])}"
+                kb.add(types.InlineKeyboardButton(label, callback_data=f"adm:usr:v:{row['user_id']}"))
+            kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:users"))
+            bot.send_message(uid, f"🔍 نتایج جستجو ({len(rows)} کاربر):", reply_markup=kb)
+            return
+
         # ── Admin: Stock Search ────────────────────────────────────────────────
         if sn in ("admin_search_by_link", "admin_search_by_config", "admin_search_by_name") and is_admin(uid):
             query_text = (message.text or "").strip()
