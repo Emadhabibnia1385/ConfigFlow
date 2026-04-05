@@ -1,8 +1,4 @@
 #!/bin/bash
-
-# When piped (curl | bash), reconnect stdin to terminal for interactive input
-[[ -t 0 ]] || exec < /dev/tty
-
 set -Eeuo pipefail
 
 REPO="https://github.com/Emadhabibnia1385/ConfigFlow.git"
