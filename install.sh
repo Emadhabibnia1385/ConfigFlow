@@ -1,23 +1,15 @@
 #!/bin/bash
 
-# When stdin is a pipe (curl | bash), reconnect to terminal for interactive input
-if [[ ! -t 0 ]]; then
-    exec < /dev/tty
-fi
+# When piped (curl | bash), reconnect stdin to terminal for interactive input
+[[ -t 0 ]] || exec < /dev/tty
 
 set -Eeuo pipefail
 
 REPO="https://github.com/Emadhabibnia1385/ConfigFlow.git"
-BRANCH="REFACTOR"
 BASE_DIR="/opt/configflow"
 BASE_SERVICE="configflow"
 DIR=""
 SERVICE=""
-if [[ "${BASH_SOURCE[0]:-}" != /dev/fd/* ]] && [[ -f "${BASH_SOURCE[0]:-}" ]]; then
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-else
-    SCRIPT_DIR="$(pwd)"
-fi
 
 R='\033[31m'; G='\033[32m'; Y='\033[33m'; C='\033[36m'; M='\033[35m'; B='\033[1m'; W='\033[97m'; N='\033[0m'
 
@@ -69,31 +61,9 @@ require_cmd() {
 }
 
 install_prereqs() {
-  info "Checking prerequisites..."
-
-  local need_apt=0
-  local missing_pkgs=()
-
-  command -v python3    >/dev/null 2>&1 || { need_apt=1; missing_pkgs+=(python3); }
-  command -v git        >/dev/null 2>&1 || { need_apt=1; missing_pkgs+=(git); }
-  command -v curl       >/dev/null 2>&1 || { need_apt=1; missing_pkgs+=(curl); }
-  python3 -m venv --help >/dev/null 2>&1 || { need_apt=1; missing_pkgs+=(python3-venv python3-pip); }
-
-  if [[ $need_apt -eq 0 ]]; then
-    ok "All prerequisites already installed — skipping apt-get"
-    return
-  fi
-
-  info "Installing missing: ${missing_pkgs[*]}"
-  apt-get update -y || {
-    echo -e "${Y}⚠ apt-get update failed (no internet or blocked mirror). Trying to install anyway...${N}"
-  }
-  apt-get install -y "${missing_pkgs[@]}" || {
-    echo -e "${Y}⚠ apt-get install failed. Checking if minimum requirements exist...${N}"
-    command -v python3 >/dev/null 2>&1 || err "python3 is required but could not be installed."
-    python3 -m venv --help >/dev/null 2>&1 || err "python3-venv is required but could not be installed."
-    ok "Minimum requirements (python3 + venv) are available — continuing."
-  }
+  info "Installing prerequisites..."
+  apt-get update -y
+  apt-get install -y git python3 python3-venv python3-pip curl
 }
 
 clone_or_update_repo() {
@@ -105,15 +75,15 @@ clone_or_update_repo() {
     info "Repository exists. Updating..."
     cd "$DIR"
     git fetch --all --prune
-    git reset --hard origin/${BRANCH}
+    git reset --hard origin/main
   else
     rm -rf "$DIR"
     mkdir -p "$DIR"
-    git clone -b "$BRANCH" "$REPO" "$DIR"
+    git clone "$REPO" "$DIR"
     cd "$DIR"
   fi
 
-  [[ -f "$DIR/main.py" ]] || err "main.py not found after download. Repo content missing?"
+  [[ -f "$DIR/bot.py" ]] || err "bot.py not found after download. Repo content missing?"
   [[ -f "$DIR/requirements.txt" ]] || err "requirements.txt not found after download."
 }
 
@@ -123,12 +93,8 @@ setup_venv() {
     python3 -m venv "$DIR/venv"
   fi
 
-  "$DIR/venv/bin/pip" install --upgrade pip wheel || true
-  "$DIR/venv/bin/pip" install -r "$DIR/requirements.txt" || {
-    echo -e "${Y}⚠ pip install failed (no internet?). Retrying with --no-deps...${N}"
-    "$DIR/venv/bin/pip" install --no-deps -r "$DIR/requirements.txt" || true
-    ok "Venv ready (some packages may be missing, but worker uses stdlib only)"
-  }
+  "$DIR/venv/bin/pip" install --upgrade pip wheel
+  "$DIR/venv/bin/pip" install -r "$DIR/requirements.txt"
 }
 
 configure_env() {
@@ -166,70 +132,6 @@ EOF
   ok "Configuration saved to $DIR/.env"
 }
 
-configure_iran_worker() {
-  echo ""
-  echo -e "${C}╔══════════════════════════════════════════════════════════════════════════╗${N}"
-  echo -e "${C}║${N}         ${B}${W}🇮🇷  Iran Server (3x-ui Worker) Configuration${N}               ${C}║${N}"
-  echo -e "${C}╚══════════════════════════════════════════════════════════════════════════╝${N}"
-  echo ""
-
-  read -r -p "$(echo -e "${B}🌐 Panel IP (default 127.0.0.1): ${N}")" INPUT_PANEL_IP
-  INPUT_PANEL_IP="${INPUT_PANEL_IP:-127.0.0.1}"
-
-  read -r -p "$(echo -e "${B}🔌 Panel Port (default 2053): ${N}")" INPUT_PANEL_PORT
-  INPUT_PANEL_PORT="${INPUT_PANEL_PORT:-2053}"
-  [[ "$INPUT_PANEL_PORT" =~ ^[0-9]+$ ]] || err "Port must be numeric"
-
-  read -r -p "$(echo -e "${B}📄 Patch (optional, e.g. /xui — press Enter to skip): ${N}")" INPUT_PATCH
-  INPUT_PATCH="${INPUT_PATCH:-}"
-
-  read -r -p "$(echo -e "${B}👤 Panel Username: ${N}")" INPUT_PANEL_USER
-  [[ -n "$INPUT_PANEL_USER" ]] || err "Panel username cannot be empty"
-
-  read -r -s -p "$(echo -e "${B}🔑 Panel Password: ${N}")" INPUT_PANEL_PASS
-  echo ""
-  [[ -n "$INPUT_PANEL_PASS" ]] || err "Panel password cannot be empty"
-
-  read -r -p "$(echo -e "${B}🆔 Inbound ID to use (default 1): ${N}")" INPUT_INBOUND_ID
-  INPUT_INBOUND_ID="${INPUT_INBOUND_ID:-1}"
-  [[ "$INPUT_INBOUND_ID" =~ ^[0-9]+$ ]] || err "Inbound ID must be numeric"
-
-  read -r -p "$(echo -e "${B}🔐 Worker API Key (min 16 chars; leave blank to auto-generate): ${N}")" INPUT_WORKER_KEY
-  if [[ -z "$INPUT_WORKER_KEY" ]]; then
-    INPUT_WORKER_KEY=$(tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 32 || openssl rand -hex 16)
-  fi
-  [[ ${#INPUT_WORKER_KEY} -ge 16 ]] || err "API key must be at least 16 characters"
-
-  read -r -p "$(echo -e "${B}🌍 Bot API URL (e.g. http://your-foreign-server:8080): ${N}")" INPUT_API_URL
-  [[ -n "$INPUT_API_URL" ]] || err "Bot API URL cannot be empty"
-
-  read -r -p "$(echo -e "${B}⏱ Poll interval in seconds (default 10): ${N}")" INPUT_POLL
-  INPUT_POLL="${INPUT_POLL:-10}"
-  [[ "$INPUT_POLL" =~ ^[0-9]+$ ]] || err "Poll interval must be numeric"
-
-  cat > "$DIR/config.env" << ENVEOF
-BOT_API_URL=$INPUT_API_URL
-WORKER_API_KEY=$INPUT_WORKER_KEY
-PANEL_IP=$INPUT_PANEL_IP
-PANEL_PORT=$INPUT_PANEL_PORT
-PANEL_PATCH=$INPUT_PATCH
-PANEL_USERNAME=$INPUT_PANEL_USER
-PANEL_PASSWORD=$INPUT_PANEL_PASS
-INBOUND_ID=$INPUT_INBOUND_ID
-POLL_INTERVAL=$INPUT_POLL
-PROTOCOL=vless
-ENVEOF
-  chmod 600 "$DIR/config.env"
-  echo ""
-  ok "Iran Worker config saved to $DIR/config.env"
-  echo -e "${Y}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${N}"
-  echo -e "${B}${W}   ⚠️  IMPORTANT — Save this API key for the bot admin panel:${N}"
-  echo -e "   ${B}${G}WORKER_API_KEY = ${INPUT_WORKER_KEY}${N}"
-  echo -e "${Y}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${N}"
-  echo ""
-  read -r -p "Press Enter to continue..."
-}
-
 create_systemd_service() {
   info "Creating systemd service..."
   cat > "/etc/systemd/system/$SERVICE.service" << EOF
@@ -241,7 +143,7 @@ After=network.target
 Type=simple
 WorkingDirectory=$DIR
 EnvironmentFile=$DIR/.env
-ExecStart=$DIR/venv/bin/python $DIR/main.py
+ExecStart=$DIR/venv/bin/python $DIR/bot.py
 Restart=always
 RestartSec=5
 
@@ -251,32 +153,6 @@ EOF
 
   systemctl daemon-reload
   systemctl enable "$SERVICE" >/dev/null 2>&1 || true
-}
-
-create_worker_service() {
-  [[ -f "$DIR/config.env" ]] || return 0
-  info "Creating Iran Worker systemd service..."
-  cat > "/etc/systemd/system/${SERVICE}-worker.service" << EOF
-[Unit]
-Description=ConfigFlow Iran Worker (3x-ui)
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=$DIR
-EnvironmentFile=$DIR/config.env
-ExecStart=$DIR/venv/bin/python $DIR/worker.py
-Restart=always
-RestartSec=10
-StandardOutput=append:${DIR}/worker.log
-StandardError=append:${DIR}/worker.log
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  systemctl daemon-reload
-  systemctl enable "${SERVICE}-worker" >/dev/null 2>&1 || true
-  ok "Worker service ${SERVICE}-worker created"
 }
 
 start_service() {
@@ -297,80 +173,6 @@ install_bot() {
   configure_env
   create_systemd_service
   start_service
-}
-
-install_worker() {
-  echo ""
-  echo -e "${C}┌──────────────────────────────────────┐${N}"
-  echo -e "${C}│${N}    ${B}${W}📦 Worker Installation Source${N}       ${C}│${N}"
-  echo -e "${C}├──────────────────────────────────────┤${N}"
-  echo -e "${C}│${N}  ${B}${G}g)${N} 🌐 Install from GitHub              ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${M}l)${N} 📁 Install from Local files         ${C}│${N}"
-  echo -e "${C}│${N}     ${Y}(worker.py + requirements.txt${N}       ${C}│${N}"
-  echo -e "${C}│${N}     ${Y} same folder as install.sh)${N}          ${C}│${N}"
-  echo -e "${C}└──────────────────────────────────────┘${N}"
-  echo ""
-  read -r -p "$(echo -e "${B}Select source [g/l]: ${N}")" src_choice
-  case "${src_choice:-}" in
-    g) _install_worker_github ;;
-    l) _install_worker_local  ;;
-    *) echo -e "${R}Invalid option${N}"; return 1 ;;
-  esac
-}
-
-_install_worker_github() {
-  ensure_safe_cwd
-  [[ -d "$DIR/.git" ]] || { install_prereqs; clone_or_update_repo; setup_venv; }
-  [[ -d "$DIR/venv" ]] || setup_venv
-  configure_iran_worker
-  create_worker_service
-  systemctl restart "${SERVICE}-worker"
-  echo ""
-  echo -e "${G}╔══════════════════════════════════════════════════════════════════════════╗${N}"
-  echo -e "${G}║${N}      ${B}${G}✅  ConfigFlow Iran Worker installed & running!${N}                   ${G}║${N}"
-  echo -e "${G}╚══════════════════════════════════════════════════════════════════════════╝${N}"
-  echo ""
-  systemctl status "${SERVICE}-worker" --no-pager -l || true
-}
-
-_install_worker_local() {
-  ensure_safe_cwd
-  info "Installing Iran Worker from local files in: $SCRIPT_DIR"
-
-  # Only worker.py is required — requirements are written inline
-  if [[ ! -f "$SCRIPT_DIR/worker.py" ]]; then
-    err "Missing file: $SCRIPT_DIR/worker.py — copy worker.py next to install.sh and try again"
-  fi
-
-  # Install system prerequisites (python3, venv)
-  install_prereqs
-
-  # Create target directory and copy worker
-  mkdir -p "$DIR"
-  cp -v "$SCRIPT_DIR/worker.py" "$DIR/worker.py"
-  ok "Copied worker.py → $DIR/worker.py"
-
-  # Write minimal worker requirements (no need to upload requirements.txt)
-  cat > "$DIR/requirements.txt" <<'WORKERREQS'
-python-dotenv
-WORKERREQS
-  ok "Created worker requirements.txt"
-
-  # Copy config.env.example if present
-  [[ -f "$SCRIPT_DIR/config.env.example" ]] && cp "$SCRIPT_DIR/config.env.example" "$DIR/config.env.example" || true
-
-  # Setup Python venv
-  setup_venv
-
-  configure_iran_worker
-  create_worker_service
-  systemctl restart "${SERVICE}-worker"
-  echo ""
-  echo -e "${G}╔══════════════════════════════════════════════════════════════════════════╗${N}"
-  echo -e "${G}║${N}      ${B}${G}✅  ConfigFlow Iran Worker installed & running!${N}                   ${G}║${N}"
-  echo -e "${G}╚══════════════════════════════════════════════════════════════════════════╝${N}"
-  echo ""
-  systemctl status "${SERVICE}-worker" --no-pager -l || true
 }
 
 update_bot() {
@@ -402,9 +204,6 @@ remove_bot() {
   systemctl stop "$SERVICE" 2>/dev/null || true
   systemctl disable "$SERVICE" 2>/dev/null || true
   rm -f "/etc/systemd/system/$SERVICE.service"
-  systemctl stop "${SERVICE}-worker" 2>/dev/null || true
-  systemctl disable "${SERVICE}-worker" 2>/dev/null || true
-  rm -f "/etc/systemd/system/${SERVICE}-worker.service"
   systemctl daemon-reload
   rm -rf "$DIR"
   ok "ConfigFlow removed completely"
@@ -423,9 +222,6 @@ show_menu() {
   echo -e "${C}│${N}  ${B}${G}7)${N} 📜 View Live Logs                 ${C}│${N}"
   echo -e "${C}│${N}  ${B}${G}8)${N} 📊 Bot Status                     ${C}│${N}"
   echo -e "${C}│${N}  ${B}${G}9)${N} 🗑️  Uninstall                      ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${M}i)${N} 🇮🇷 Install Iran Worker (3x-ui)    ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${M}w)${N} 📋 Worker Logs                    ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${M}W)${N} 🔁 Restart Worker                 ${C}│${N}"
   echo -e "${C}│${N}  ${B}${R}0)${N} 🚪 Exit                           ${C}│${N}"
   echo -e "${C}└──────────────────────────────────────┘${N}"
   echo ""
@@ -485,7 +281,7 @@ main() {
     echo ""
     show_menu
 
-    read -r -p "$(echo -e "${C}ConfigFlow #${INSTANCE_NUM}${N} ${B}➜${N} Select option ${W}[0-9/i/w/W]${N}: ")" choice
+    read -r -p "$(echo -e "${C}ConfigFlow #${INSTANCE_NUM}${N} ${B}➜${N} Select option ${W}[0-9]${N}: ")" choice
 
     case "${choice:-}" in
       1) install_bot ;;
@@ -497,9 +293,6 @@ main() {
       7) echo -e "${Y}Press Ctrl+C to exit logs${N}"; sleep 1; journalctl -u "$SERVICE" -f;;
       8) systemctl status "$SERVICE" --no-pager -l; read -r -p "Press Enter to continue...";;
       9) remove_bot; read -r -p "Press Enter to continue...";;
-      i) install_worker; read -r -p "Press Enter to continue...";;
-      w) echo -e "${Y}Press Ctrl+C to exit logs${N}"; sleep 1; journalctl -u "${SERVICE}-worker" -f;;
-      W) systemctl restart "${SERVICE}-worker"; ok "Worker #${INSTANCE_NUM} restarted"; read -r -p "Press Enter to continue...";;
       0) echo "Goodbye!"; exit 0;;
       *) echo -e "${R}Invalid option${N}"; sleep 1;;
     esac
