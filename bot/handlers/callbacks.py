@@ -53,6 +53,140 @@ from ..admin.renderers import (
 )
 from ..admin.backup import _send_backup
 
+
+def _get_bulk_page_ids(sd):
+    """Return config IDs for the current page of a bulk selection state."""
+    kind   = sd.get("kind", "av")
+    scope  = sd.get("scope", "pk")
+    pkg_id = int(sd.get("pkg_id", 0))
+    page   = int(sd.get("page", 0))
+    offset = page * CONFIGS_PER_PAGE
+    with get_conn() as conn:
+        if scope == "pk":
+            if kind == "sl":
+                rows = conn.execute(
+                    "SELECT id FROM configs WHERE package_id=? AND sold_to IS NOT NULL ORDER BY id DESC LIMIT ? OFFSET ?",
+                    (pkg_id, CONFIGS_PER_PAGE, offset)).fetchall()
+            elif kind == "ex":
+                rows = conn.execute(
+                    "SELECT id FROM configs WHERE package_id=? AND is_expired=1 ORDER BY id DESC LIMIT ? OFFSET ?",
+                    (pkg_id, CONFIGS_PER_PAGE, offset)).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id FROM configs WHERE package_id=? AND sold_to IS NULL AND reserved_payment_id IS NULL AND is_expired=0 ORDER BY id DESC LIMIT ? OFFSET ?",
+                    (pkg_id, CONFIGS_PER_PAGE, offset)).fetchall()
+        else:
+            if kind == "sl":
+                rows = conn.execute(
+                    "SELECT id FROM configs WHERE sold_to IS NOT NULL ORDER BY id DESC LIMIT ? OFFSET ?",
+                    (CONFIGS_PER_PAGE, offset)).fetchall()
+            elif kind == "ex":
+                rows = conn.execute(
+                    "SELECT id FROM configs WHERE is_expired=1 ORDER BY id DESC LIMIT ? OFFSET ?",
+                    (CONFIGS_PER_PAGE, offset)).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id FROM configs WHERE sold_to IS NULL AND reserved_payment_id IS NULL AND is_expired=0 ORDER BY id DESC LIMIT ? OFFSET ?",
+                    (CONFIGS_PER_PAGE, offset)).fetchall()
+    return [r["id"] for r in rows]
+
+
+def _render_bulk_page(call, uid):
+    """Render the bulk selection page for stock/config management."""
+    sd       = state_data(uid)
+    kind     = sd.get("kind", "av")   # av / sl / ex
+    scope    = sd.get("scope", "pk")  # pk / all
+    pkg_id   = int(sd.get("pkg_id", 0))
+    page     = int(sd.get("page", 0))
+    sel_raw  = sd.get("selected", "")
+    selected = set(int(x) for x in sel_raw.split(",") if x.strip().lstrip("-").isdigit())
+    offset   = page * CONFIGS_PER_PAGE
+
+    with get_conn() as conn:
+        if scope == "pk":
+            if kind == "sl":
+                cfgs  = conn.execute(
+                    "SELECT id, service_name, sold_to, is_expired FROM configs WHERE package_id=? AND sold_to IS NOT NULL ORDER BY id DESC LIMIT ? OFFSET ?",
+                    (pkg_id, CONFIGS_PER_PAGE, offset)).fetchall()
+                total = conn.execute(
+                    "SELECT COUNT(*) AS n FROM configs WHERE package_id=? AND sold_to IS NOT NULL", (pkg_id,)).fetchone()["n"]
+            elif kind == "ex":
+                cfgs  = conn.execute(
+                    "SELECT id, service_name, sold_to, is_expired FROM configs WHERE package_id=? AND is_expired=1 ORDER BY id DESC LIMIT ? OFFSET ?",
+                    (pkg_id, CONFIGS_PER_PAGE, offset)).fetchall()
+                total = conn.execute(
+                    "SELECT COUNT(*) AS n FROM configs WHERE package_id=? AND is_expired=1", (pkg_id,)).fetchone()["n"]
+            else:
+                cfgs  = conn.execute(
+                    "SELECT id, service_name, sold_to, is_expired FROM configs WHERE package_id=? AND sold_to IS NULL AND reserved_payment_id IS NULL AND is_expired=0 ORDER BY id DESC LIMIT ? OFFSET ?",
+                    (pkg_id, CONFIGS_PER_PAGE, offset)).fetchall()
+                total = conn.execute(
+                    "SELECT COUNT(*) AS n FROM configs WHERE package_id=? AND sold_to IS NULL AND reserved_payment_id IS NULL AND is_expired=0", (pkg_id,)).fetchone()["n"]
+        else:
+            if kind == "sl":
+                cfgs  = conn.execute(
+                    "SELECT id, service_name, sold_to, is_expired FROM configs WHERE sold_to IS NOT NULL ORDER BY id DESC LIMIT ? OFFSET ?",
+                    (CONFIGS_PER_PAGE, offset)).fetchall()
+                total = conn.execute(
+                    "SELECT COUNT(*) AS n FROM configs WHERE sold_to IS NOT NULL").fetchone()["n"]
+            elif kind == "ex":
+                cfgs  = conn.execute(
+                    "SELECT id, service_name, sold_to, is_expired FROM configs WHERE is_expired=1 ORDER BY id DESC LIMIT ? OFFSET ?",
+                    (CONFIGS_PER_PAGE, offset)).fetchall()
+                total = conn.execute(
+                    "SELECT COUNT(*) AS n FROM configs WHERE is_expired=1").fetchone()["n"]
+            else:
+                cfgs  = conn.execute(
+                    "SELECT id, service_name, sold_to, is_expired FROM configs WHERE sold_to IS NULL AND reserved_payment_id IS NULL AND is_expired=0 ORDER BY id DESC LIMIT ? OFFSET ?",
+                    (CONFIGS_PER_PAGE, offset)).fetchall()
+                total = conn.execute(
+                    "SELECT COUNT(*) AS n FROM configs WHERE sold_to IS NULL AND reserved_payment_id IS NULL AND is_expired=0").fetchone()["n"]
+
+    total_pages = max(1, (total + CONFIGS_PER_PAGE - 1) // CONFIGS_PER_PAGE)
+    page_ids    = [c["id"] for c in cfgs]
+    all_sel     = bool(page_ids) and all(cid in selected for cid in page_ids)
+
+    kb = types.InlineKeyboardMarkup()
+    for c in cfgs:
+        mark = "✅" if c["id"] in selected else "⬜️"
+        kb.add(types.InlineKeyboardButton(f"{mark} {c['service_name']}", callback_data=f"adm:stk:btog:{c['id']}"))
+
+    if not all_sel:
+        kb.add(types.InlineKeyboardButton("☑️ انتخاب همه این صفحه", callback_data="adm:stk:bsall"))
+    else:
+        kb.add(types.InlineKeyboardButton("🔲 لغو انتخاب این صفحه", callback_data="adm:stk:bclr"))
+    if selected:
+        kb.add(types.InlineKeyboardButton("🚫 لغو همه انتخاب‌ها", callback_data="adm:stk:bclrall"))
+
+    nav_row = []
+    if page > 0:
+        nav_row.append(types.InlineKeyboardButton("⬅️ قبل", callback_data=f"adm:stk:bnav:{page-1}"))
+    nav_row.append(types.InlineKeyboardButton(f"📄 {page+1}/{total_pages}", callback_data="noop"))
+    if page < total_pages - 1:
+        nav_row.append(types.InlineKeyboardButton("بعد ➡️", callback_data=f"adm:stk:bnav:{page+1}"))
+    if len(nav_row) > 1:
+        kb.row(*nav_row)
+
+    if selected:
+        sel_count = len(selected)
+        if kind in ("av", "sl"):
+            kb.row(
+                types.InlineKeyboardButton(f"🗑 حذف ({sel_count})", callback_data="adm:stk:bdel"),
+                types.InlineKeyboardButton(f"❌ منقضی ({sel_count})", callback_data="adm:stk:bexp"),
+            )
+        else:
+            kb.add(types.InlineKeyboardButton(f"🗑 حذف ({sel_count})", callback_data="adm:stk:bdel"))
+
+    kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="adm:stk:bcanc"))
+
+    kind_labels = {"av": "🟢 موجود", "sl": "🔴 فروخته", "ex": "❌ منقضی"}
+    heading = (
+        f"☑️ <b>انتخاب گروهی — {kind_labels.get(kind, '')}</b>\n\n"
+        f"✅ {len(selected)} مورد انتخاب شده | صفحه {page+1}/{total_pages} از {total} کانفیگ"
+    )
+    send_or_edit(call, heading, kb)
+
+
 @bot.callback_query_handler(func=lambda c: True)
 def on_callback(call):
     uid  = call.from_user.id
@@ -1558,16 +1692,20 @@ def _dispatch_callback(call, uid, data):
                 total = conn.execute("SELECT COUNT(*) AS n FROM configs WHERE is_expired=1").fetchone()["n"]
             else:
                 cfgs = conn.execute(
-                    "SELECT * FROM configs WHERE sold_to IS NULL AND reserved_payment_id IS NULL AND is_expired=0 ORDER BY id ASC LIMIT ? OFFSET ?",
+                    "SELECT * FROM configs WHERE sold_to IS NULL AND reserved_payment_id IS NULL AND is_expired=0 ORDER BY id DESC LIMIT ? OFFSET ?",
                     (CONFIGS_PER_PAGE, offset)
                 ).fetchall()
                 total = conn.execute("SELECT COUNT(*) AS n FROM configs WHERE sold_to IS NULL AND reserved_payment_id IS NULL AND is_expired=0").fetchone()["n"]
         total_pages = max(1, (total + CONFIGS_PER_PAGE - 1) // CONFIGS_PER_PAGE)
         kb         = types.InlineKeyboardMarkup()
         for c in cfgs:
-            expired_mark = " ❌" if c["is_expired"] else ""
-            label = f"{c['service_name']}{expired_mark}"
-            kb.add(types.InlineKeyboardButton(label, callback_data=f"adm:stk:cfg:{c['id']}"))
+            if c["is_expired"]:
+                mark = "❌"
+            elif c["sold_to"]:
+                mark = "🔴"
+            else:
+                mark = "🟢"
+            kb.add(types.InlineKeyboardButton(f"{mark} {c['service_name']}", callback_data=f"adm:stk:cfg:{c['id']}"))
         nav_row = []
         if page > 0:
             nav_row.append(types.InlineKeyboardButton("⬅️ قبلی", callback_data=f"adm:stk:all:{kind_str}:{page-1}"))
@@ -1575,6 +1713,14 @@ def _dispatch_callback(call, uid, data):
             nav_row.append(types.InlineKeyboardButton("بعدی ➡️", callback_data=f"adm:stk:all:{kind_str}:{page+1}"))
         if nav_row:
             kb.row(*nav_row)
+        # Bulk action buttons
+        if kind_str in ("av", "sl"):
+            kb.row(
+                types.InlineKeyboardButton("🗑 حذف همگانی",   callback_data=f"adm:stk:blkA:{kind_str}"),
+                types.InlineKeyboardButton("❌ منقضی همگانی", callback_data=f"adm:stk:blkA:{kind_str}"),
+            )
+        else:
+            kb.add(types.InlineKeyboardButton("🗑 حذف همگانی", callback_data=f"adm:stk:blkA:{kind_str}"))
         kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:stock"))
         bot.answer_callback_query(call.id)
         if kind_str == "sl":
@@ -1683,7 +1829,7 @@ def _dispatch_callback(call, uid, data):
                 ).fetchone()["n"]
             else:
                 cfgs = conn.execute(
-                    "SELECT * FROM configs WHERE package_id=? AND sold_to IS NULL AND reserved_payment_id IS NULL AND is_expired=0 ORDER BY id ASC LIMIT ? OFFSET ?",
+                    "SELECT * FROM configs WHERE package_id=? AND sold_to IS NULL AND reserved_payment_id IS NULL AND is_expired=0 ORDER BY id DESC LIMIT ? OFFSET ?",
                     (package_id, CONFIGS_PER_PAGE, offset)
                 ).fetchall()
                 total = conn.execute(
@@ -1693,9 +1839,13 @@ def _dispatch_callback(call, uid, data):
         total_pages = max(1, (total + CONFIGS_PER_PAGE - 1) // CONFIGS_PER_PAGE)
         kb         = types.InlineKeyboardMarkup()
         for c in cfgs:
-            expired_mark = " ❌" if c["is_expired"] else ""
-            label = f"{c['service_name']}{expired_mark}"
-            kb.add(types.InlineKeyboardButton(label, callback_data=f"adm:stk:cfg:{c['id']}"))
+            if c["is_expired"]:
+                mark = "❌"
+            elif c["sold_to"]:
+                mark = "🔴"
+            else:
+                mark = "🟢"
+            kb.add(types.InlineKeyboardButton(f"{mark} {c['service_name']}", callback_data=f"adm:stk:cfg:{c['id']}"))
         # Pagination
         nav_row = []
         if page > 0:
@@ -1704,6 +1854,14 @@ def _dispatch_callback(call, uid, data):
             nav_row.append(types.InlineKeyboardButton("بعد ➡️", callback_data=f"adm:stk:{kind_str}:{package_id}:{page+1}"))
         if nav_row:
             kb.row(*nav_row)
+        # Bulk action buttons
+        if kind_str in ("av", "sl"):
+            kb.row(
+                types.InlineKeyboardButton("🗑 حذف همگانی",   callback_data=f"adm:stk:blk:{kind_str}:{package_id}"),
+                types.InlineKeyboardButton("❌ منقضی همگانی", callback_data=f"adm:stk:blk:{kind_str}:{package_id}"),
+            )
+        else:
+            kb.add(types.InlineKeyboardButton("🗑 حذف همگانی", callback_data=f"adm:stk:blk:{kind_str}:{package_id}"))
         kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"adm:stk:pk:{package_id}"))
         bot.answer_callback_query(call.id)
         if kind_str == "sl":
@@ -1797,6 +1955,146 @@ def _dispatch_callback(call, uid, data):
             conn.execute("DELETE FROM configs WHERE id=?", (config_id,))
         bot.answer_callback_query(call.id, "کانفیگ حذف شد.")
         send_or_edit(call, "✅ کانفیگ با موفقیت حذف شد.", back_button("admin:stock"))
+        return
+
+    # ── Admin: Bulk select — All packages entry (must be before blk: check) ──
+    if data.startswith("adm:stk:blkA:"):
+        kind = data.split(":")[3]  # av / sl / ex
+        if not (admin_has_perm(uid, "manage_configs") or uid in ADMIN_IDS):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        state_set(uid, "stk_bulk", kind=kind, scope="all", pkg_id=0, page=0, selected="")
+        bot.answer_callback_query(call.id)
+        _render_bulk_page(call, uid)
+        return
+
+    # ── Admin: Bulk select — Per-package entry ────────────────────────────────
+    if data.startswith("adm:stk:blk:"):
+        parts  = data.split(":")
+        kind   = parts[3]         # av / sl / ex
+        pkg_id = int(parts[4])    # package_id
+        if not (admin_has_perm(uid, "manage_configs") or uid in ADMIN_IDS):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        state_set(uid, "stk_bulk", kind=kind, scope="pk", pkg_id=pkg_id, page=0, selected="")
+        bot.answer_callback_query(call.id)
+        _render_bulk_page(call, uid)
+        return
+
+    # ── Admin: Bulk select — Toggle individual config ─────────────────────────
+    if data.startswith("adm:stk:btog:"):
+        cfg_id   = int(data.split(":")[3])
+        sd       = state_data(uid)
+        sel_raw  = sd.get("selected", "")
+        selected = set(int(x) for x in sel_raw.split(",") if x.strip().lstrip("-").isdigit())
+        if cfg_id in selected:
+            selected.discard(cfg_id)
+        else:
+            selected.add(cfg_id)
+        state_set(uid, "stk_bulk",
+                  kind=sd.get("kind", "av"), scope=sd.get("scope", "pk"),
+                  pkg_id=sd.get("pkg_id", 0), page=sd.get("page", 0),
+                  selected=",".join(str(x) for x in selected))
+        bot.answer_callback_query(call.id)
+        _render_bulk_page(call, uid)
+        return
+
+    # ── Admin: Bulk select — Select all on current page ───────────────────────
+    if data == "adm:stk:bsall":
+        sd       = state_data(uid)
+        sel_raw  = sd.get("selected", "")
+        selected = set(int(x) for x in sel_raw.split(",") if x.strip().lstrip("-").isdigit())
+        selected.update(_get_bulk_page_ids(sd))
+        state_set(uid, "stk_bulk",
+                  kind=sd.get("kind", "av"), scope=sd.get("scope", "pk"),
+                  pkg_id=sd.get("pkg_id", 0), page=sd.get("page", 0),
+                  selected=",".join(str(x) for x in selected))
+        bot.answer_callback_query(call.id)
+        _render_bulk_page(call, uid)
+        return
+
+    # ── Admin: Bulk select — Deselect current page ────────────────────────────
+    if data == "adm:stk:bclr":
+        sd       = state_data(uid)
+        sel_raw  = sd.get("selected", "")
+        selected = set(int(x) for x in sel_raw.split(",") if x.strip().lstrip("-").isdigit())
+        for cid in _get_bulk_page_ids(sd):
+            selected.discard(cid)
+        state_set(uid, "stk_bulk",
+                  kind=sd.get("kind", "av"), scope=sd.get("scope", "pk"),
+                  pkg_id=sd.get("pkg_id", 0), page=sd.get("page", 0),
+                  selected=",".join(str(x) for x in selected))
+        bot.answer_callback_query(call.id)
+        _render_bulk_page(call, uid)
+        return
+
+    # ── Admin: Bulk select — Clear all selections ─────────────────────────────
+    if data == "adm:stk:bclrall":
+        sd = state_data(uid)
+        state_set(uid, "stk_bulk",
+                  kind=sd.get("kind", "av"), scope=sd.get("scope", "pk"),
+                  pkg_id=sd.get("pkg_id", 0), page=sd.get("page", 0),
+                  selected="")
+        bot.answer_callback_query(call.id)
+        _render_bulk_page(call, uid)
+        return
+
+    # ── Admin: Bulk select — Navigate pages ───────────────────────────────────
+    if data.startswith("adm:stk:bnav:"):
+        new_page = int(data.split(":")[3])
+        sd = state_data(uid)
+        state_set(uid, "stk_bulk",
+                  kind=sd.get("kind", "av"), scope=sd.get("scope", "pk"),
+                  pkg_id=sd.get("pkg_id", 0), page=new_page,
+                  selected=sd.get("selected", ""))
+        bot.answer_callback_query(call.id)
+        _render_bulk_page(call, uid)
+        return
+
+    # ── Admin: Bulk select — Execute delete ───────────────────────────────────
+    if data == "adm:stk:bdel":
+        sd      = state_data(uid)
+        sel_raw = sd.get("selected", "")
+        ids     = [int(x) for x in sel_raw.split(",") if x.strip().lstrip("-").isdigit()]
+        if not ids:
+            bot.answer_callback_query(call.id, "⚠️ هیچ موردی انتخاب نشده.", show_alert=True)
+            return
+        with get_conn() as conn:
+            placeholders = ",".join("?" * len(ids))
+            conn.execute(f"DELETE FROM configs WHERE id IN ({placeholders})", ids)
+        state_clear(uid)
+        bot.answer_callback_query(call.id, f"✅ {len(ids)} کانفیگ حذف شد.", show_alert=True)
+        send_or_edit(call, f"✅ <b>{len(ids)}</b> کانفیگ با موفقیت حذف شد.", back_button("admin:stock"))
+        return
+
+    # ── Admin: Bulk select — Execute expire ───────────────────────────────────
+    if data == "adm:stk:bexp":
+        sd      = state_data(uid)
+        sel_raw = sd.get("selected", "")
+        ids     = [int(x) for x in sel_raw.split(",") if x.strip().lstrip("-").isdigit()]
+        if not ids:
+            bot.answer_callback_query(call.id, "⚠️ هیچ موردی انتخاب نشده.", show_alert=True)
+            return
+        with get_conn() as conn:
+            for cfg_id in ids:
+                conn.execute("UPDATE configs SET is_expired=1 WHERE id=?", (cfg_id,))
+        state_clear(uid)
+        bot.answer_callback_query(call.id, f"✅ {len(ids)} کانفیگ منقضی شد.", show_alert=True)
+        send_or_edit(call, f"✅ <b>{len(ids)}</b> کانفیگ منقضی اعلام شد.", back_button("admin:stock"))
+        return
+
+    # ── Admin: Bulk select — Cancel / back ────────────────────────────────────
+    if data == "adm:stk:bcanc":
+        sd     = state_data(uid)
+        kind   = sd.get("kind", "av")
+        scope  = sd.get("scope", "pk")
+        pkg_id = int(sd.get("pkg_id", 0))
+        state_clear(uid)
+        bot.answer_callback_query(call.id)
+        if scope == "pk":
+            _fake_call(call, f"adm:stk:{kind}:{pkg_id}:0")
+        else:
+            _fake_call(call, f"adm:stk:all:{kind}:0")
         return
 
     # ── Admin: Stock Search ───────────────────────────────────────────────────
