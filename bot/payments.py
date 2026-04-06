@@ -172,8 +172,9 @@ def send_payment_to_admins(payment_id):
     package_row = get_package(payment["package_id"]) if payment["package_id"] else None
     kind_label  = "شارژ کیف پول" if payment["kind"] == "wallet_charge" else "خرید کانفیگ"
     method_label = payment["payment_method"]
-    if payment["crypto_coin"]:
-        method_label += f" ({payment['crypto_coin']})"
+    coin_key = payment["crypto_coin"]
+    if coin_key:
+        method_label += f" ({coin_key})"
     package_text = ""
     if package_row:
         package_text = (
@@ -182,6 +183,15 @@ def send_payment_to_admins(payment_id):
             f"\n🔋 حجم: {package_row['volume_gb']} گیگ"
             f"\n⏰ مدت: {package_row['duration_days']} روز"
         )
+    # Crypto equivalent line (shown only for crypto payments)
+    crypto_line = ""
+    if coin_key:
+        symbol = CRYPTO_API_SYMBOLS.get(coin_key, "")
+        if symbol:
+            prices = _get_prices()
+            if symbol in prices and prices[symbol] > 0:
+                coin_amount = payment["amount"] / prices[symbol]
+                crypto_line = f"\n💱 معادل ارزی: <code>{coin_amount:.6f} {symbol}</code>"
     text = (
         f"📥 <b>درخواست جدید برای بررسی</b>\n\n"
         f"🧾 نوع: {kind_label} | {method_label}\n"
@@ -189,6 +199,7 @@ def send_payment_to_admins(payment_id):
         f"🆔 نام کاربری: {esc(display_username(user['username']))}\n"
         f"🔢 آیدی: <code>{user['user_id']}</code>\n"
         f"💰 مبلغ: <b>{fmt_price(payment['amount'])}</b> تومان"
+        f"{crypto_line}"
         f"{package_text}\n\n"
         f"📝 توضیح کاربر:\n{esc(payment['receipt_text'] or '-')}"
     )
