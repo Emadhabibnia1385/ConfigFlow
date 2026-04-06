@@ -75,7 +75,7 @@ def show_crypto_selection(target, amount=None):
             price_note = ""
             if amount and symbol and symbol in prices and prices[symbol] > 0:
                 coin_amount = amount / prices[symbol]
-                price_note  = f"\n≈ {coin_amount:.4f} {symbol}"
+                price_note  = f" | ≈ {coin_amount:.4f} {symbol}"
             kb.add(types.InlineKeyboardButton(f"{coin_label}{price_note}", callback_data=f"pm:crypto:{coin_key}"))
     if not has_any:
         send_or_edit(target, "⚠️ هیچ آدرس ارز دیجیتالی توسط ادمین ثبت نشده است.", back_button("main"))
