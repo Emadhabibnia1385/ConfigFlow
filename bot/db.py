@@ -319,6 +319,7 @@ def count_all_users():
 
 
 def search_users(query):
+    query = query.lstrip("@")
     with get_conn() as conn:
         if query.isdigit():
             return conn.execute(
