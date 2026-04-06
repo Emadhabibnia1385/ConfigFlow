@@ -33,7 +33,7 @@ from ..gateways.crypto import fetch_crypto_prices
 from ..gateways.tetrapay import create_tetrapay_order, verify_tetrapay_order
 from ..gateways.swapwallet import (
     create_swapwallet_invoice, check_swapwallet_invoice,
-    show_swapwallet_page, swapwallet_error_page, _swapwallet_crypto_line,
+    show_swapwallet_page, swapwallet_error_page,
 )
 from ..ui.helpers import send_or_edit, check_channel_membership, channel_lock_message
 from ..ui.keyboards import kb_main, kb_admin_panel
@@ -417,7 +417,7 @@ def _dispatch_callback(call, uid, data):
         if is_gateway_available("tetrapay", uid, price):
             kb.add(types.InlineKeyboardButton("🏦 پرداخت آنلاین (TetraPay)", callback_data=f"rpay:tetrapay:{purchase_id}:{package_id}"))
         if is_gateway_available("swapwallet", uid, price):
-            kb.add(types.InlineKeyboardButton("💎 پرداخت با سواپ ولت", callback_data=f"rpay:swapwallet:{purchase_id}:{package_id}"))
+            kb.add(types.InlineKeyboardButton("🏦 پرداخت آنلاین ریالی (SwapWallet)", callback_data=f"rpay:swapwallet:{purchase_id}:{package_id}"))
         kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"renew:{purchase_id}"))
         bot.answer_callback_query(call.id)
         send_or_edit(call, text, kb)
@@ -525,7 +525,7 @@ def _dispatch_callback(call, uid, data):
         if not success:
             bot.answer_callback_query(call.id, "خطا در بررسی وضعیت فاکتور.", show_alert=True)
             return
-        if inv.get("status") == "PAID":
+        if inv.get("status") in ("PAID", "COMPLETED") or inv.get("paidAt"):
             complete_payment(payment_id)
             package_row = get_package(payment["package_id"])
             config_id   = payment["config_id"]
@@ -544,7 +544,7 @@ def _dispatch_callback(call, uid, data):
                 admin_renewal_notify(uid, item, package_row, payment["amount"], "SwapWallet")
             state_clear(uid)
         else:
-            bot.answer_callback_query(call.id, "❌ پرداخت هنوز تأیید نشده. لطفاً ابتدا از سواپ ولت پرداخت را انجام دهید.", show_alert=True)
+            bot.answer_callback_query(call.id, "❌ پرداخت هنوز تأیید نشده. لطفاً ابتدا پرداخت را انجام دهید.", show_alert=True)
         return
 
     if data.startswith("rpay:swapwallet:"):
@@ -566,40 +566,17 @@ def _dispatch_callback(call, uid, data):
             err_msg = result.get("error", "خطای ناشناخته") if isinstance(result, dict) else str(result)
             bot.answer_callback_query(call.id, f"❌ خطا در ایجاد فاکتور:\n{err_msg}", show_alert=True)
             return
-        invoice_id     = result.get("id", "")
-        wallet_address = result.get("walletAddress", "")
-        links          = result.get("links", [])
-        usd_amount, usd_unit, network = _swapwallet_crypto_line(price, result)
+        invoice_id    = result.get("id", "")
+        payment_links = result.get("paymentLinks", [])
         payment_id = create_payment("renewal", uid, package_id, price, "swapwallet", status="pending",
                                      config_id=item["config_id"])
         with get_conn() as conn:
             conn.execute("UPDATE payments SET receipt_text=? WHERE id=?", (invoice_id, payment_id))
         state_set(uid, "await_renewal_swapwallet_verify", payment_id=payment_id, invoice_id=invoice_id,
                   purchase_id=purchase_id)
-        crypto_line = f"<b>{esc(usd_amount)} {esc(usd_unit)}</b> ({network})" if usd_amount else f"<b>{esc(usd_unit)}</b> (مراجعه به درگاه)"
-        text = (
-            "💎 <b>پرداخت با سواپ ولت (تمدید)</b>\n\n"
-            "⚠️ <b>راهنما:</b>\n"
-            "۱. ربات <a href='https://t.me/SwapWalletBot'>@SwapWalletBot</a> را استارت کنید\n"
-            "۲. احراز هویت انجام دهید\n"
-            "۳. کیف پول خود را شارژ کنید\n"
-            "۴. روی دکمه پرداخت بزنید تا مبلغ از کیف پولتان کسر شود\n\n"
-            f"💰 مبلغ: <b>{fmt_price(price)}</b> تومان\n"
-            f"💳 شما باید {crypto_line} به آدرس زیر واریز کنید:\n"
-            f"<code>{esc(wallet_address)}</code>\n\n"
-            "پس از پرداخت، دکمه «✅ بررسی پرداخت» را بزنید."
-        )
-        kb = types.InlineKeyboardMarkup()
-        for link in links:
-            link_name = link.get("name", "")
-            link_url  = link.get("url", "")
-            if link_url:
-                btn_label = "💳 پرداخت از سواپ ولت" if link_name == "SWAP_WALLET" else f"🔗 {esc(link_name)}"
-                kb.add(types.InlineKeyboardButton(btn_label, url=link_url))
-        kb.add(types.InlineKeyboardButton("✅ بررسی پرداخت", callback_data=f"rpay:swapwallet:verify:{payment_id}"))
-        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
-        bot.answer_callback_query(call.id)
-        send_or_edit(call, text, kb)
+        show_swapwallet_page(call, amount_toman=price, invoice_id=invoice_id,
+                             payment_links=payment_links, payment_id=payment_id,
+                             verify_cb=f"rpay:swapwallet:verify:{payment_id}")
         return
 
     if data.startswith("rpay:tetrapay:verify:"):
@@ -813,7 +790,7 @@ def _dispatch_callback(call, uid, data):
         if is_gateway_available("tetrapay", uid, price):
             kb.add(types.InlineKeyboardButton("🏦 پرداخت آنلاین (TetraPay)", callback_data=f"pay:tetrapay:{package_id}"))
         if is_gateway_available("swapwallet", uid, price):
-            kb.add(types.InlineKeyboardButton("💎 پرداخت با سواپ ولت", callback_data=f"pay:swapwallet:{package_id}"))
+            kb.add(types.InlineKeyboardButton("🏦 پرداخت آنلاین ریالی (SwapWallet)", callback_data=f"pay:swapwallet:{package_id}"))
         kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"buy:t:{package_row['type_id']}"))
         bot.answer_callback_query(call.id)
         send_or_edit(call, text, kb)
@@ -974,7 +951,7 @@ def _dispatch_callback(call, uid, data):
         if not success:
             bot.answer_callback_query(call.id, "خطا در بررسی وضعیت فاکتور.", show_alert=True)
             return
-        if inv.get("status") == "PAID":
+        if inv.get("status") in ("PAID", "COMPLETED") or inv.get("paidAt"):
             if payment["kind"] == "wallet_charge":
                 update_balance(uid, payment["amount"])
                 complete_payment(payment_id)
@@ -1007,7 +984,7 @@ def _dispatch_callback(call, uid, data):
                 admin_purchase_notify("SwapWallet", get_user(uid), package_row)
                 state_clear(uid)
         else:
-            bot.answer_callback_query(call.id, "❌ پرداخت هنوز تأیید نشده. لطفاً ابتدا از سواپ ولت پرداخت را انجام دهید.", show_alert=True)
+            bot.answer_callback_query(call.id, "❌ پرداخت هنوز تأیید نشده. لطفاً ابتدا پرداخت را انجام دهید.", show_alert=True)
         return
 
     if data.startswith("pay:swapwallet:"):
@@ -1023,38 +1000,15 @@ def _dispatch_callback(call, uid, data):
             err_msg = result.get("error", "خطای ناشناخته") if isinstance(result, dict) else str(result)
             bot.answer_callback_query(call.id, f"❌ خطا در ایجاد فاکتور:\n{err_msg}", show_alert=True)
             return
-        invoice_id     = result.get("id", "")
-        wallet_address = result.get("walletAddress", "")
-        links          = result.get("links", [])
-        usd_amount, usd_unit, network = _swapwallet_crypto_line(price, result)
+        invoice_id    = result.get("id", "")
+        payment_links = result.get("paymentLinks", [])
         payment_id = create_payment("config_purchase", uid, package_id, price, "swapwallet", status="pending")
         with get_conn() as conn:
             conn.execute("UPDATE payments SET receipt_text=? WHERE id=?", (invoice_id, payment_id))
         state_set(uid, "await_swapwallet_verify", payment_id=payment_id, invoice_id=invoice_id)
-        crypto_line = f"<b>{esc(usd_amount)} {esc(usd_unit)}</b> ({network})" if usd_amount else f"<b>{esc(usd_unit)}</b> (مراجعه به درگاه)"
-        text = (
-            "💎 <b>پرداخت با سواپ ولت</b>\n\n"
-            "⚠️ <b>راهنما:</b>\n"
-            "۱. ربات <a href='https://t.me/SwapWalletBot'>@SwapWalletBot</a> را استارت کنید\n"
-            "۲. احراز هویت انجام دهید\n"
-            "۳. کیف پول خود را شارژ کنید\n"
-            "۴. روی دکمه پرداخت بزنید تا مبلغ از کیف پولتان کسر شود\n\n"
-            f"💰 مبلغ: <b>{fmt_price(price)}</b> تومان\n"
-            f"💳 شما باید {crypto_line} به آدرس زیر واریز کنید:\n"
-            f"<code>{esc(wallet_address)}</code>\n\n"
-            "پس از پرداخت، دکمه «✅ بررسی پرداخت» را بزنید."
-        )
-        kb = types.InlineKeyboardMarkup()
-        for link in links:
-            link_name = link.get("name", "")
-            link_url  = link.get("url", "")
-            if link_url:
-                btn_label = "💳 پرداخت از سواپ ولت" if link_name == "SWAP_WALLET" else f"🔗 {esc(link_name)}"
-                kb.add(types.InlineKeyboardButton(btn_label, url=link_url))
-        kb.add(types.InlineKeyboardButton("✅ بررسی پرداخت", callback_data=f"pay:swapwallet:verify:{payment_id}"))
-        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
-        bot.answer_callback_query(call.id)
-        send_or_edit(call, text, kb)
+        show_swapwallet_page(call, amount_toman=price, invoice_id=invoice_id,
+                             payment_links=payment_links, payment_id=payment_id,
+                             verify_cb=f"pay:swapwallet:verify:{payment_id}")
         return
 
     # ── TetraPay ──────────────────────────────────────────────────────────────
@@ -1315,38 +1269,15 @@ def _dispatch_callback(call, uid, data):
             err_msg = result.get("error", "خطای ناشناخته") if isinstance(result, dict) else str(result)
             bot.answer_callback_query(call.id, f"❌ خطا در ایجاد فاکتور:\n{err_msg}", show_alert=True)
             return
-        invoice_id     = result.get("id", "")
-        wallet_address = result.get("walletAddress", "")
-        links          = result.get("links", [])
-        usd_amount, usd_unit, network = _swapwallet_crypto_line(amount, result)
+        invoice_id    = result.get("id", "")
+        payment_links = result.get("paymentLinks", [])
         payment_id = create_payment("wallet_charge", uid, None, amount, "swapwallet", status="pending")
         with get_conn() as conn:
             conn.execute("UPDATE payments SET receipt_text=? WHERE id=?", (invoice_id, payment_id))
         state_set(uid, "await_swapwallet_verify", payment_id=payment_id, invoice_id=invoice_id)
-        crypto_line = f"<b>{esc(usd_amount)} {esc(usd_unit)}</b> ({network})" if usd_amount else f"<b>{esc(usd_unit)}</b> (مراجعه به درگاه)"
-        text = (
-            "💎 <b>شارژ کیف پول - پرداخت با سواپ ولت</b>\n\n"
-            "⚠️ <b>راهنما:</b>\n"
-            "۱. ربات <a href='https://t.me/SwapWalletBot'>@SwapWalletBot</a> را استارت کنید\n"
-            "۲. احراز هویت انجام دهید\n"
-            "۳. کیف پول خود را شارژ کنید\n"
-            "۴. روی دکمه پرداخت بزنید تا مبلغ از کیف پولتان کسر شود\n\n"
-            f"💰 مبلغ: <b>{fmt_price(amount)}</b> تومان\n"
-            f"💳 شما باید {crypto_line} به آدرس زیر واریز کنید:\n"
-            f"<code>{esc(wallet_address)}</code>\n\n"
-            "پس از پرداخت، دکمه «✅ بررسی پرداخت» را بزنید."
-        )
-        kb = types.InlineKeyboardMarkup()
-        for link in links:
-            link_name = link.get("name", "")
-            link_url  = link.get("url", "")
-            if link_url:
-                btn_label = "💳 پرداخت از سواپ ولت" if link_name == "SWAP_WALLET" else f"🔗 {esc(link_name)}"
-                kb.add(types.InlineKeyboardButton(btn_label, url=link_url))
-        kb.add(types.InlineKeyboardButton("✅ بررسی پرداخت", callback_data=f"pay:swapwallet:verify:{payment_id}"))
-        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
-        bot.answer_callback_query(call.id)
-        send_or_edit(call, text, kb)
+        show_swapwallet_page(call, amount_toman=amount, invoice_id=invoice_id,
+                             payment_links=payment_links, payment_id=payment_id,
+                             verify_cb=f"pay:swapwallet:verify:{payment_id}")
         return
 
     # ── Admin panel ────────────────────────────────────────────────────────────
@@ -2701,7 +2632,7 @@ def _dispatch_callback(call, uid, data):
     # ── Gateway settings ─────────────────────────────────────────────────────
     if data == "adm:set:gateways":
         kb = types.InlineKeyboardMarkup()
-        for gw_key, gw_label in [("card", "💳 کارت به کارت"), ("crypto", "💎 ارز دیجیتال"), ("tetrapay", "🏦 کارت به کارت آنلاین (TetraPay)"), ("swapwallet", "💎 سواپ ولت (SwapWallet)")]:
+        for gw_key, gw_label in [("card", "💳 کارت به کارت"), ("crypto", "💎 ارز دیجیتال"), ("tetrapay", "🏦 کارت به کارت آنلاین (TetraPay)"), ("swapwallet", "🏦 پرداخت آنلاین ریالی (SwapWallet)")]:
             enabled = setting_get(f"gw_{gw_key}_enabled", "0")
             status_icon = "🟢" if enabled == "1" else "🔴"
             kb.add(types.InlineKeyboardButton(f"{status_icon} {gw_label}", callback_data=f"adm:set:gw:{gw_key}"))
@@ -2896,7 +2827,7 @@ def _dispatch_callback(call, uid, data):
         kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="adm:set:gateways"))
         key_display = f"<code>{esc(api_key[:8])}...{esc(api_key[-4:])}</code>" if api_key else "❌ <b>ثبت نشده</b>"
         text = (
-            "💎 <b>درگاه سواپ ولت (SwapWallet)</b>\n\n"
+            "🏦 <b>درگاه پرداخت آنلاین ریالی (SwapWallet)</b>\n\n"
             f"وضعیت: {enabled_label}\n"
             f"نمایش: {vis_label}\n\n"
             f"👤 نام کاربری فروشگاه: <code>{esc(username or 'ثبت نشده')}</code>\n"
