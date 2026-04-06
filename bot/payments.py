@@ -108,20 +108,41 @@ def show_crypto_payment_info(target, uid, coin_key, amount):
     )
     kb = types.InlineKeyboardMarkup()
     kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
-    # Delete the selection message and send a fresh one so the screen
-    # always transitions — editing in-place sometimes silently fails when
-    # the previous message came from a different send path.
-    chat_id = None
+
     if hasattr(target, "message"):
         chat_id = target.message.chat.id
+        msg_id  = target.message.message_id
+        # Always use explicit parse_mode so HTML tags are parsed correctly.
+        # send_or_edit omits parse_mode which causes Telegram to raise
+        # "can't parse entities" and silently swallow the error, leaving
+        # the coin-selection screen unchanged.
         try:
-            bot.delete_message(chat_id, target.message.message_id)
+            bot.edit_message_text(
+                text, chat_id, msg_id,
+                reply_markup=kb,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+            return
         except Exception:
             pass
+        # Edit failed: remove buttons so old coins aren't clickable, then
+        # send the payment info as a fresh message.
+        try:
+            bot.delete_message(chat_id, msg_id)
+        except Exception:
+            try:
+                bot.edit_message_reply_markup(
+                    chat_id, msg_id,
+                    reply_markup=types.InlineKeyboardMarkup()
+                )
+            except Exception:
+                pass
+        bot.send_message(chat_id, text, reply_markup=kb,
+                         parse_mode="HTML", disable_web_page_preview=True)
     elif hasattr(target, "chat"):
-        chat_id = target.chat.id
-    if chat_id:
-        bot.send_message(chat_id, text, reply_markup=kb)
+        bot.send_message(target.chat.id, text, reply_markup=kb,
+                         parse_mode="HTML", disable_web_page_preview=True)
     else:
         send_or_edit(target, text, kb)
 
