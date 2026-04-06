@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import traceback
+import sqlite3
 from telebot import types
 from ..config import ADMIN_IDS, ADMIN_PERMS, PERM_FULL_SET, CONFIGS_PER_PAGE
 from ..bot_instance import bot

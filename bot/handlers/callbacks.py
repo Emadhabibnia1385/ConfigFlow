@@ -24,6 +24,7 @@ from ..db import (
     get_all_panels, get_panel, add_panel, delete_panel,
     get_panel_packages, add_panel_package, delete_panel_package, update_panel_field,
     get_conn, create_pending_order, get_pending_order, add_config, search_users,
+    reset_all_free_tests,
 )
 from ..gateways.base import is_gateway_available, is_card_info_complete
 from ..gateways.crypto import fetch_crypto_prices
@@ -1251,10 +1252,10 @@ def _dispatch_callback(call, uid, data):
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("✏️ ویرایش نام", callback_data=f"admin:type:editname:{type_id}"))
         kb.add(types.InlineKeyboardButton("📝 ویرایش توضیحات", callback_data=f"admin:type:editdesc:{type_id}"))
-        if row.get("description"):
+        if row["description"]:
             kb.add(types.InlineKeyboardButton("🗑 حذف توضیحات", callback_data=f"admin:type:deldesc:{type_id}"))
         kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:types"))
-        desc_preview = f"\n📝 توضیحات: {esc(row['description'][:80])}..." if row.get("description") and len(row["description"]) > 80 else (f"\n📝 توضیحات: {esc(row['description'])}" if row.get("description") else "\n📝 توضیحات: ندارد")
+        desc_preview = f"\n📝 توضیحات: {esc(row['description'][:80])}..." if row["description"] and len(row["description"]) > 80 else (f"\n📝 توضیحات: {esc(row['description'])}" if row["description"] else "\n📝 توضیحات: ندارد")
         bot.answer_callback_query(call.id)
         send_or_edit(call, f"✏️ <b>ویرایش نوع:</b> {esc(row['name'])}{desc_preview}", kb)
         return
@@ -1314,6 +1315,10 @@ def _dispatch_callback(call, uid, data):
 
     if data.startswith("admin:type:del:"):
         type_id = int(data.split(":")[3])
+        packs = get_packages(type_id=type_id, include_inactive=True)
+        if packs:
+            bot.answer_callback_query(call.id, "⚠️ ابتدا پکیج‌های این نوع را حذف کنید.", show_alert=True)
+            return
         delete_type(type_id)
         bot.answer_callback_query(call.id, "نوع حذف شد.")
         _show_admin_types(call)
