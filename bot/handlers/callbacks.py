@@ -216,12 +216,18 @@ def on_callback(call):
     try:
         _dispatch_callback(call, uid, data)
     except Exception as e:
+        import traceback as _tb
+        err_detail = _tb.format_exc()
         print("CALLBACK_ERROR:", e)
-        traceback.print_exc()
+        print(err_detail)
         try:
-            bot.answer_callback_query(call.id, "خطایی رخ داد.", show_alert=True)
+            short = str(e)[:120]
+            bot.answer_callback_query(call.id, f"⚠️ خطا: {short}", show_alert=True)
         except Exception:
-            pass
+            try:
+                bot.answer_callback_query(call.id, "خطایی رخ داد.", show_alert=True)
+            except Exception:
+                pass
 
 
 def _swapwallet_error_inline(call, err_msg):
@@ -980,46 +986,6 @@ def _dispatch_callback(call, uid, data):
         show_main_menu(call)
         return
 
-    if data == "pm:swapwallet":
-        sd     = state_data(uid)
-        amount = sd.get("amount")
-        if not amount:
-            bot.answer_callback_query(call.id, "ابتدا مبلغ را وارد کنید.", show_alert=True)
-            return
-        order_id = f"wallet-{uid}-{int(datetime.now().timestamp())}"
-        success, result = create_swapwallet_invoice(amount, order_id, "شارژ کیف پول")
-        if not success:
-            err_msg = result.get("error", "خطای ناشناخته") if isinstance(result, dict) else str(result)
-            _swapwallet_error_inline(call, err_msg)
-            return
-        invoice_id    = result.get("id", "")
-        payment_links = result.get("paymentLinks", [])
-        payment_id = create_payment("wallet_charge", uid, None, amount, "swapwallet", status="pending")
-        with get_conn() as conn:
-            conn.execute("UPDATE payments SET receipt_text=? WHERE id=?", (invoice_id, payment_id))
-        state_set(uid, "await_swapwallet_verify", payment_id=payment_id, invoice_id=invoice_id)
-        bot.answer_callback_query(call.id)
-        show_swapwallet_page(call, amount_toman=amount, invoice_id=invoice_id,
-                             payment_links=payment_links, payment_id=payment_id,
-                             verify_cb=f"pay:swapwallet:verify:{payment_id}")
-        return
-
-    if data == "pm:swapwallet_crypto":
-        sd     = state_data(uid)
-        amount = sd.get("amount")
-        if not amount:
-            bot.answer_callback_query(call.id, "ابتدا مبلغ را وارد کنید.", show_alert=True)
-            return
-        from ..gateways.swapwallet_crypto import SWAPWALLET_CRYPTO_NETWORKS, NETWORK_LABELS as SW_NET_LABELS
-        state_set(uid, "swcrypto_network_select", kind="wallet_charge", amount=amount)
-        kb = types.InlineKeyboardMarkup()
-        for net, _ in SWAPWALLET_CRYPTO_NETWORKS:
-            kb.add(types.InlineKeyboardButton(SW_NET_LABELS.get(net, net), callback_data=f"swcrypto:net:{net}"))
-        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
-        bot.answer_callback_query(call.id)
-        send_or_edit(call, "💎 <b>پرداخت کریپتو (SwapWallet)</b>\n\nشبکه مورد نظر را انتخاب کنید:", kb)
-        return
-
     # ── SwapWallet ────────────────────────────────────────────────────────────
     if data.startswith("pay:swapwallet:verify:"):
         payment_id = int(data.split(":")[3])
@@ -1564,8 +1530,8 @@ def _dispatch_callback(call, uid, data):
         text = (
             "⚙️ <b>پنل مدیریت</b>\n\n"
             "بخش مورد نظر را انتخاب کنید:\n\n"
-            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-            "💡 <b>ConfigFlow</b> \n"
+            "────────────────\n"
+            "💡 <b>ConfigFlow v2.0</b>\n"
             "👨‍💻 Developer: @Emad_Habibnia\n"
             "🌐 <a href='https://github.com/Emadhabibnia1385/ConfigFlow'>GitHub ConfigFlow</a>\n"
             "❤️ <a href='https://t.me/EmadHabibnia/4'>donate</a>"
@@ -1691,12 +1657,56 @@ def _dispatch_callback(call, uid, data):
 
     if data.startswith("admin:type:del:"):
         type_id = int(data.split(":")[3])
-        packs = get_packages(type_id=type_id, include_inactive=True)
-        if packs:
-            bot.answer_callback_query(call.id, "⚠️ ابتدا پکیج‌های این نوع را حذف کنید.", show_alert=True)
+        with get_conn() as conn:
+            sold_in_type = conn.execute(
+                "SELECT COUNT(*) AS n FROM configs c "
+                "JOIN packages p ON p.id=c.package_id "
+                "WHERE p.type_id=? AND c.sold_to IS NOT NULL",
+                (type_id,)
+            ).fetchone()["n"]
+            if sold_in_type > 0:
+                bot.answer_callback_query(call.id, f"❌ {sold_in_type} کانفیگ فروخته‌شده در این نوع وجود دارد.", show_alert=True)
+                return
+            pack_count = conn.execute(
+                "SELECT COUNT(*) AS n FROM packages WHERE type_id=?", (type_id,)
+            ).fetchone()["n"]
+            total_cfg = conn.execute(
+                "SELECT COUNT(*) AS n FROM configs c "
+                "JOIN packages p ON p.id=c.package_id WHERE p.type_id=?",
+                (type_id,)
+            ).fetchone()["n"]
+        if pack_count > 0 or total_cfg > 0:
+            kb_c = types.InlineKeyboardMarkup()
+            kb_c.row(
+                types.InlineKeyboardButton("✅ بله، همه حذف شود", callback_data=f"admin:type:delok:{type_id}"),
+                types.InlineKeyboardButton("❌ انصراف", callback_data="admin:types"),
+            )
+            bot.answer_callback_query(call.id)
+            send_or_edit(call,
+                f"⚠️ <b>تأیید حذف نوع</b>\n\n"
+                f"{pack_count} پکیج و {total_cfg} کانفیگ (موجود/منقضی) همراه با این نوع حذف خواهند شد.\n"
+                "آیا مطمئن هستید؟", kb_c)
             return
         delete_type(type_id)
-        bot.answer_callback_query(call.id, "نوع حذف شد.")
+        bot.answer_callback_query(call.id, "✅ نوع حذف شد.")
+        _show_admin_types(call)
+        return
+
+    if data.startswith("admin:type:delok:"):
+        type_id = int(data.split(":")[3])
+        with get_conn() as conn:
+            sold_in_type = conn.execute(
+                "SELECT COUNT(*) AS n FROM configs c "
+                "JOIN packages p ON p.id=c.package_id "
+                "WHERE p.type_id=? AND c.sold_to IS NOT NULL",
+                (type_id,)
+            ).fetchone()["n"]
+        if sold_in_type > 0:
+            bot.answer_callback_query(call.id, "❌ در این فاصله کانفیگ فروخته شد. حذف ممکن نیست.", show_alert=True)
+            _show_admin_types(call)
+            return
+        delete_type(type_id)
+        bot.answer_callback_query(call.id, "✅ نوع و تمام پکیج‌های آن حذف شدند.")
         _show_admin_types(call)
         return
 
@@ -1761,15 +1771,40 @@ def _dispatch_callback(call, uid, data):
             if sold_count > 0:
                 bot.answer_callback_query(call.id, f"❌ این پکیج {sold_count} کانفیگ فروخته‌شده دارد و قابل حذف نیست.", show_alert=True)
                 return
-            active_configs = conn.execute(
-                "SELECT COUNT(*) AS n FROM configs WHERE package_id=? AND sold_to IS NULL AND is_expired=0 AND reserved_payment_id IS NULL",
+            unsold_cfg = conn.execute(
+                "SELECT COUNT(*) AS n FROM configs WHERE package_id=?",
                 (package_id,)
             ).fetchone()["n"]
-            if active_configs > 0:
-                bot.answer_callback_query(call.id, f"❌ این پکیج {active_configs} کانفیگ فعال دارد و قابل حذف نیست.", show_alert=True)
-                return
+        if unsold_cfg > 0:
+            kb_c = types.InlineKeyboardMarkup()
+            kb_c.row(
+                types.InlineKeyboardButton("✅ بله، حذف شود", callback_data=f"admin:pkg:delok:{package_id}"),
+                types.InlineKeyboardButton("❌ انصراف", callback_data="admin:types"),
+            )
+            bot.answer_callback_query(call.id)
+            send_or_edit(call,
+                f"⚠️ <b>تأیید حذف پکیج</b>\n\n"
+                f"{unsold_cfg} کانفیگ موجود/منقضی همراه با پکیج حذف خواهند شد.\n"
+                "آیا مطمئن هستید؟", kb_c)
+            return
         delete_package(package_id)
-        bot.answer_callback_query(call.id, "پکیج حذف شد.")
+        bot.answer_callback_query(call.id, "✅ پکیج حذف شد.")
+        _show_admin_types(call)
+        return
+
+    if data.startswith("admin:pkg:delok:"):
+        package_id = int(data.split(":")[3])
+        with get_conn() as conn:
+            sold_count = conn.execute(
+                "SELECT COUNT(*) AS n FROM configs WHERE package_id=? AND sold_to IS NOT NULL",
+                (package_id,)
+            ).fetchone()["n"]
+        if sold_count > 0:
+            bot.answer_callback_query(call.id, "❌ در این فاصله کانفیگ فروخته شد. حذف ممکن نیست.", show_alert=True)
+            _show_admin_types(call)
+            return
+        delete_package(package_id)
+        bot.answer_callback_query(call.id, "✅ پکیج و کانفیگ‌های آن حذف شدند.")
         _show_admin_types(call)
         return
 
@@ -2154,11 +2189,11 @@ def _dispatch_callback(call, uid, data):
                     f"زمان خرید: {esc(row['sold_at'] or '-')}"
                 )
         if not row["is_expired"]:
-            kb.add(types.InlineKeyboardButton("❌ منقضی کردن", callback_data=f"adm:stk:exp:{config_id}"))
+            kb.add(types.InlineKeyboardButton("❌ منقضی کردن", callback_data=f"adm:stk:exp:{config_id}:{row['package_id']}"))
         else:
             text += "\n\n⚠️ این سرویس منقضی شده است."
-        kb.add(types.InlineKeyboardButton("🗑 حذف کانفیگ", callback_data=f"adm:stk:del:{config_id}"))
-        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:stock"))
+        kb.add(types.InlineKeyboardButton("🗑 حذف کانفیگ", callback_data=f"adm:stk:del:{config_id}:{row['package_id']}"))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"adm:stk:pk:{row['package_id']}"))
         bot.answer_callback_query(call.id)
         # Send with QR code
         try:
@@ -2178,7 +2213,9 @@ def _dispatch_callback(call, uid, data):
         return
 
     if data.startswith("adm:stk:exp:"):
-        config_id = int(data.split(":")[3])
+        parts = data.split(":")
+        config_id  = int(parts[3])
+        package_id = int(parts[4]) if len(parts) > 4 else 0
         expire_config(config_id)
         # Notify buyer if any
         with get_conn() as conn:
@@ -2192,15 +2229,19 @@ def _dispatch_callback(call, uid, data):
             except Exception:
                 pass
         bot.answer_callback_query(call.id, "سرویس منقضی شد.")
-        send_or_edit(call, "✅ سرویس منقضی اعلام شد.", back_button("admin:stock"))
+        back = back_button(f"adm:stk:pk:{package_id}") if package_id else back_button("admin:stock")
+        send_or_edit(call, "✅ سرویس منقضی اعلام شد.", back)
         return
 
     if data.startswith("adm:stk:del:"):
-        config_id = int(data.split(":")[3])
+        parts = data.split(":")
+        config_id  = int(parts[3])
+        package_id = int(parts[4]) if len(parts) > 4 else 0
         with get_conn() as conn:
             conn.execute("DELETE FROM configs WHERE id=?", (config_id,))
         bot.answer_callback_query(call.id, "کانفیگ حذف شد.")
-        send_or_edit(call, "✅ کانفیگ با موفقیت حذف شد.", back_button("admin:stock"))
+        back = back_button(f"adm:stk:pk:{package_id}") if package_id else back_button("admin:stock")
+        send_or_edit(call, "✅ کانفیگ با موفقیت حذف شد.", back)
         return
 
     # ── Admin: Bulk select — All packages entry (must be before blk: check) ──
@@ -2565,15 +2606,33 @@ def _dispatch_callback(call, uid, data):
         if not any(perms.values()):
             bot.answer_callback_query(call.id, "حداقل یک سطح دسترسی انتخاب کنید.", show_alert=True)
             return
-        add_admin_user(target_id, uid, perms)
-        state_clear(uid)
-        bot.answer_callback_query(call.id, "✅ ادمین اضافه شد.")
-        try:
-            bot.send_message(target_id,
-                "👮 <b>شما به عنوان ادمین اضافه شدید!</b>\n\n"
-                "برای دسترسی به پنل مدیریت از دستور /start استفاده کنید.")
-        except Exception:
-            pass
+        edit_mode = sd2.get("edit_mode", False)
+        # Build human-readable permission list for notification
+        perms_labels = {k: v for k, v in ADMIN_PERMS}
+        active_perm_names = [perms_labels.get(k, k) for k, v in perms.items() if v]
+        perm_text = "\n".join(f"• {p}" for p in active_perm_names) or "— بدون دسترسی —"
+        if edit_mode:
+            update_admin_permissions(target_id, perms)
+            state_clear(uid)
+            bot.answer_callback_query(call.id, "✅ دسترسی‌ها به‌روز شد.")
+            try:
+                bot.send_message(target_id,
+                    "🔑 <b>دسترسی‌های شما به‌روزرسانی شد</b>\n\n"
+                    f"<b>دسترسی‌های فعال:</b>\n{perm_text}\n\n"
+                    "برای استفاده از دسترسی‌های جدید از /start استفاده کنید.")
+            except Exception:
+                pass
+        else:
+            add_admin_user(target_id, uid, perms)
+            state_clear(uid)
+            bot.answer_callback_query(call.id, "✅ ادمین اضافه شد.")
+            try:
+                bot.send_message(target_id,
+                    "👮 <b>شما به عنوان ادمین اضافه شدید!</b>\n\n"
+                    f"<b>دسترسی‌های شما:</b>\n{perm_text}\n\n"
+                    "برای دسترسی به پنل مدیریت از دستور /start استفاده کنید.")
+            except Exception:
+                pass
         _show_admin_admins_panel(call)
         return
 

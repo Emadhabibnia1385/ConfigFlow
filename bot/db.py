@@ -357,15 +357,20 @@ def count_users_stats():
 
 
 def search_users(query):
-    query = query.lstrip("@")
+    query = query.lstrip("@").strip()
     with get_conn() as conn:
+        base = (
+            "SELECT u.*, "
+            "(SELECT COUNT(*) FROM purchases p WHERE p.user_id=u.user_id) AS purchase_count "
+            "FROM users u WHERE "
+        )
         if query.isdigit():
             return conn.execute(
-                "SELECT * FROM users WHERE user_id=? LIMIT 50", (int(query),)
+                base + "u.user_id=? LIMIT 50", (int(query),)
             ).fetchall()
         return conn.execute(
-            "SELECT * FROM users WHERE full_name LIKE ? OR username LIKE ? "
-            "ORDER BY user_id DESC LIMIT 50",
+            base + "(u.full_name LIKE ? OR u.username LIKE ?) "
+            "ORDER BY u.user_id DESC LIMIT 50",
             (f"%{query}%", f"%{query}%")
         ).fetchall()
 

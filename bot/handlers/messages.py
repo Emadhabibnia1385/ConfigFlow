@@ -713,11 +713,15 @@ def universal_handler(message):
             kb = types.InlineKeyboardMarkup()
             for row in rows:
                 status_icon = "🔘" if row["status"] == "safe" else "⚠️"
-                agent_icon  = "🤝" if row["is_agent"] else ""
-                label = f"{status_icon}{agent_icon} {row['full_name']} | @{row['username'] or str(row['user_id'])}"
+                agent_icon  = "🤝 " if row["is_agent"] else ""
+                uname       = f"@{row['username']}" if row["username"] else str(row["user_id"])
+                name_part   = row["full_name"] or f"(آیدی: {row['user_id']})"
+                buy_tag     = f" 🛍{row['purchase_count']}" if row.get("purchase_count") else ""
+                label = f"{status_icon} {agent_icon}{name_part} | {uname}{buy_tag}"
                 kb.add(types.InlineKeyboardButton(label, callback_data=f"adm:usr:v:{row['user_id']}"))
-            kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:users"))
-            bot.send_message(uid, f"🔍 نتایج جستجو ({len(rows)} کاربر):", reply_markup=kb)
+            kb.add(types.InlineKeyboardButton("🔍 جستجوی جدید", callback_data="adm:usr:search"))
+            kb.add(types.InlineKeyboardButton("🔙 بازگشت به لیست", callback_data="admin:users"))
+            bot.send_message(uid, f"🔍 <b>نتایج جستجو</b> — {len(rows)} کاربر یافت شد:", reply_markup=kb)
             return
 
         # ── Admin: Stock Search ────────────────────────────────────────────────
