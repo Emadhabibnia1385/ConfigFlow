@@ -39,7 +39,9 @@ def create_tronpays_rial_invoice(amount_toman, hash_id, callback_url="https://ex
         return False, {"error": str(result)}
     except urllib.error.HTTPError as e:
         try:
-            err_data = json.loads(e.read().decode("utf-8"))
+            body = e.read().decode("utf-8")
+            print(f"[TronPays] HTTP {e.code} body: {body}")
+            err_data = json.loads(body)
             msg = str(err_data)[:300]
         except Exception:
             msg = f"HTTP {e.code}: {e.reason}"
