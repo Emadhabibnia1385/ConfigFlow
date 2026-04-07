@@ -209,6 +209,17 @@ def init_db():
             "worker_api_key":     "",
             "worker_api_port":    "8080",
             "worker_api_enabled": "0",
+            "group_id":                    "",
+            "group_topic_backup":           "",
+            "group_topic_new_users":        "",
+            "group_topic_payment_approval": "",
+            "group_topic_renewal_request":  "",
+            "group_topic_purchase_log":     "",
+            "group_topic_renewal_log":      "",
+            "group_topic_wallet_log":       "",
+            "group_topic_test_report":      "",
+            "group_topic_broadcast_report": "",
+            "group_topic_error_log":        "",
         }
         for coin, _ in CRYPTO_COINS:
             defaults[f"crypto_{coin}"] = ""
@@ -304,6 +315,8 @@ def notify_first_start_if_needed(tg_user):
             bot.send_message(admin_id, text)
         except Exception:
             pass
+    from .group_manager import send_to_topic as _send_to_topic
+    _send_to_topic("new_users", text)
 
 
 def get_users(has_purchase=None, limit=None, offset=0):

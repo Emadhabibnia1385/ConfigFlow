@@ -18,6 +18,7 @@ from ..db import (
 )
 from ..helpers import esc, fmt_price
 from ..bot_instance import bot
+from ..group_manager import send_to_topic
 
 
 # ── Purchase delivery ──────────────────────────────────────────────────────────
@@ -50,6 +51,15 @@ def deliver_purchase_message(chat_id, purchase_id):
     kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
     bot.send_photo(chat_id, bio, caption=text, parse_mode="HTML", reply_markup=kb)
 
+    # also mirror to is_test=1 → test_report topic, else → purchase_log topic
+    if item.get("is_test"):
+        send_to_topic("test_report",
+            f"🧪 <b>تست رایگان</b>\n\n"
+            f"👤 کاربر: {esc(item.get('full_name', str(chat_id)))}\n"
+            f"🧩 نوع: {esc(item['type_name'])}\n"
+            f"📦 پکیج: {esc(item['package_name'] if 'package_name' in item.keys() else '')}\n"
+            f"🔮 سرویس: {esc(service_name)}"
+        )
     type_desc = item["type_description"] if item["type_description"] else ""
     if type_desc:
         bot.send_message(chat_id, f"📌 <b>توضیحات سرویس:</b>\n\n{esc(type_desc)}", parse_mode="HTML")
@@ -84,6 +94,7 @@ def admin_purchase_notify(method_label, user_row, package_row):
             bot.send_message(sub_id, text)
         except Exception:
             pass
+    send_to_topic("purchase_log", text)
 
 
 def admin_renewal_notify(user_id, purchase_item, package_row, amount, method_label):
@@ -122,6 +133,7 @@ def admin_renewal_notify(user_id, purchase_item, package_row, amount, method_lab
             bot.send_message(sub_id, text, reply_markup=kb)
         except Exception:
             pass
+    send_to_topic("renewal_request", text, reply_markup=kb)
 
 
 def notify_pending_order_to_admins(pending_id, user_id, package_row, amount, method):
@@ -160,6 +172,7 @@ def notify_pending_order_to_admins(pending_id, user_id, package_row, amount, met
             bot.send_message(sub_id, text, reply_markup=kb)
         except Exception:
             pass
+    send_to_topic("payment_approval", text, reply_markup=kb)
 
 
 # ── Pending order fulfillment ──────────────────────────────────────────────────

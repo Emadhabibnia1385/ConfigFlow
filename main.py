@@ -10,6 +10,7 @@ from bot.db import init_db
 from bot.ui.helpers import set_bot_commands
 from bot.db import setting_get
 from bot.admin.backup import _backup_loop
+from bot.group_manager import _group_topic_loop
 import bot.handlers  # noqa: F401 — registers all handlers
 from bot.bot_instance import bot  # must come after to avoid being shadowed by the package name
 
@@ -21,6 +22,10 @@ def main():
     # Start backup thread
     backup_thread = threading.Thread(target=_backup_loop, daemon=True)
     backup_thread.start()
+
+    # Start group topic maintenance loop
+    group_thread = threading.Thread(target=_group_topic_loop, daemon=True)
+    group_thread.start()
 
     # Start worker API server if enabled
     if setting_get("worker_api_enabled", "0") == "1":

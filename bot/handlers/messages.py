@@ -77,6 +77,8 @@ def universal_handler(message):
                     pass
             state_clear(uid)
             bot.send_message(uid, f"✅ پیام برای {sent} کاربر ارسال شد.", reply_markup=kb_admin_panel())
+            from ..group_manager import send_to_topic as _stt
+            _stt("broadcast_report", f"📢 <b>اطلاع‌رسانی (همه کاربران)</b>\n\n✅ برای {sent} کاربر ارسال شد.")
             return
 
         if sn == "admin_broadcast_customers" and is_admin(uid):
@@ -90,6 +92,8 @@ def universal_handler(message):
                     pass
             state_clear(uid)
             bot.send_message(uid, f"✅ پیام برای {sent} مشتری ارسال شد.", reply_markup=kb_admin_panel())
+            from ..group_manager import send_to_topic as _stt
+            _stt("broadcast_report", f"📢 <b>اطلاع‌رسانی (مشتریان)</b>\n\n✅ برای {sent} مشتری ارسال شد.")
             return
 
         # ── Wallet amount ──────────────────────────────────────────────────────
@@ -669,6 +673,24 @@ def universal_handler(message):
             setting_set("backup_target_id", val)
             state_clear(uid)
             bot.send_message(uid, "✅ مقصد بکاپ ذخیره شد.", reply_markup=back_button("admin:backup"))
+            return
+
+        if sn == "admin_set_group_id" and is_admin(uid):
+            from ..group_manager import ensure_group_topics
+            val = (message.text or "").strip()
+            if not val.lstrip("-").isdigit():
+                bot.send_message(uid,
+                    "⚠️ آیدی گروه باید عددی باشد.\nمثال: <code>-1001234567890</code>",
+                    reply_markup=back_button("admin:group"))
+                return
+            setting_set("group_id", val)
+            state_clear(uid)
+            bot.send_message(uid,
+                f"✅ آیدی گروه <code>{val}</code> ذخیره شد.\n\n"
+                "در حال ساخت تاپیک‌ها...", parse_mode="HTML")
+            result = ensure_group_topics()
+            bot.send_message(uid, f"🛠 <b>نتیجه ساخت تاپیک:</b>\n\n{result}",
+                             parse_mode="HTML", reply_markup=back_button("admin:group"))
             return
 
         if sn == "admin_restore_backup" and is_admin(uid):

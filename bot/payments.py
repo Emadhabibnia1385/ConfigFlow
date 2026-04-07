@@ -20,6 +20,7 @@ from .gateways.base import is_gateway_available, is_card_info_complete
 from .gateways.crypto import fetch_crypto_prices
 from .bot_instance import bot
 from .ui.helpers import send_or_edit
+from .group_manager import send_to_topic, send_photo_to_topic
 
 # ── Price cache (60 s TTL) — both selection and payment info share the same data
 _PRICES_CACHE: dict = {}
@@ -233,6 +234,10 @@ def send_payment_to_admins(payment_id):
                 bot.send_message(sub_id, text, reply_markup=kb)
         except Exception:
             pass
+    if payment["receipt_file_id"]:
+        send_photo_to_topic("payment_approval", payment["receipt_file_id"], caption=text)
+    else:
+        send_to_topic("payment_approval", text, reply_markup=kb)
 
 
 # ── Card payment approval / rejection ─────────────────────────────────────────
@@ -251,6 +256,13 @@ def finish_card_payment_approval(payment_id, admin_note, approved):
             update_balance(user_id, payment["amount"])
             complete_payment(payment_id)
             bot.send_message(user_id, f"✅ واریزی شما تأیید شد.\n\n{esc(admin_note)}")
+            user_row = get_user(user_id)
+            send_to_topic("wallet_log",
+                f"💰 <b>شارژ کیف‌پول تأیید شد</b>\n\n"
+                f"👤 {esc(user_row['full_name'] if user_row else str(user_id))}\n"
+                f"🆔 <code>{user_id}</code>\n"
+                f"💵 مبلغ: {fmt_price(payment['amount'])} تومان"
+            )
 
         elif payment["kind"] == "config_purchase":
             config_id   = payment["config_id"]

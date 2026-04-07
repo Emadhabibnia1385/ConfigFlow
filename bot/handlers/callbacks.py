@@ -49,6 +49,14 @@ from ..ui.notifications import (
     deliver_purchase_message, admin_purchase_notify, admin_renewal_notify,
     notify_pending_order_to_admins, _complete_pending_order, auto_fulfill_pending_orders,
 )
+from ..group_manager import (
+    ensure_group_topics, reset_and_recreate_topics, get_group_id,
+    _count_active_topics, TOPICS, send_to_topic,
+)
+from ..group_manager import (
+    ensure_group_topics, reset_and_recreate_topics, get_group_id, _count_active_topics, TOPICS,
+    send_to_topic,
+)
 from ..payments import (
     get_effective_price, show_payment_method_selection,
     show_crypto_selection, show_crypto_payment_info,
@@ -864,14 +872,23 @@ def _dispatch_callback(call, uid, data):
         except Exception:
             pass
         # Notify user
+        svc_name = ""
         try:
             with get_conn() as conn:
                 cfg_row = conn.execute("SELECT service_name FROM configs WHERE id=?", (config_id,)).fetchone()
-            svc_name = cfg_row["service_name"] if cfg_row else ""
+            svc_name = urllib.parse.unquote(cfg_row["service_name"] or "") if cfg_row else ""
             bot.send_message(target_uid,
                 f"🎉 <b>تمدید سرویس انجام شد!</b>\n\n"
                 f"✅ سرویس <b>{esc(svc_name)}</b> شما با موفقیت تمدید شد.\n"
                 "از اعتماد شما سپاسگزاریم. 🙏")
+        except Exception:
+            pass
+        try:
+            send_to_topic("renewal_log",
+                f"🔄 <b>تمدید تأیید شد</b>\n\n"
+                f"🔢 آیدی کاربر: <code>{target_uid}</code>\n"
+                f"🔮 سرویس: {esc(svc_name or str(config_id))}"
+            )
         except Exception:
             pass
         return
@@ -2994,6 +3011,65 @@ def _dispatch_callback(call, uid, data):
                      back_button("admin:broadcast"))
         return
 
+    # ── Admin: Group management ───────────────────────────────────────────────
+    if data == "admin:group":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        gid      = get_group_id()
+        active_c = _count_active_topics()
+        total_c  = len(TOPICS)
+        gid_text = f"<code>{gid}</code>" if gid else "تنظیم نشده"
+        text = (
+            "🏢 <b>مدیریت گروه ادمین</b>\n\n"
+            "📌 <b>راهنما:</b>\n"
+            "۱. یک سوپرگروه تلگرام بسازید و Topics را فعال کنید.\n"
+            "۲. ربات را به گروه اضافه و ادمین کنید.\n"
+            "۳. آیدی عددی گروه را با @getidsbot دریافت کنید.\n"
+            "۴. دکمه «ثبت آیدی گروه» را بزنید و آیدی را ارسال کنید.\n\n"
+            "ℹ️ آیدی گروه با <code>-100</code> شروع می‌شود. مثال: <code>-1001234567890</code>\n\n"
+            f"📊 <b>وضعیت:</b> گروه {gid_text} | تاپیک‌ها: {active_c}/{total_c}"
+        )
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("🔢 ثبت آیدی گروه",      callback_data="adm:grp:setid"))
+        kb.add(types.InlineKeyboardButton("🛠 ساخت تاپیک‌های جدید",  callback_data="adm:grp:create"))
+        kb.add(types.InlineKeyboardButton("♻️ بازسازی همه تاپیک‌ها", callback_data="adm:grp:reset"))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:settings"))
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, text, kb)
+        return
+
+    if data == "adm:grp:setid":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        state_set(uid, "admin_set_group_id")
+        bot.answer_callback_query(call.id)
+        send_or_edit(call,
+            "🔢 <b>آیدی عددی گروه</b> را ارسال کنید:\n\n"
+            "مثال: <code>-1001234567890</code>\n\n"
+            "برای دریافت آیدی گروه، ربات <b>@getidsbot</b> را به گروه اضافه کنید و <code>/id</code> بفرستید.",
+            back_button("admin:group"))
+        return
+
+    if data == "adm:grp:create":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        bot.answer_callback_query(call.id, "در حال ساخت تاپیک‌ها...", show_alert=False)
+        result = ensure_group_topics()
+        send_or_edit(call, f"🛠 <b>ساخت تاپیک</b>\n\n{result}", back_button("admin:group"))
+        return
+
+    if data == "adm:grp:reset":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        bot.answer_callback_query(call.id, "در حال بازسازی...", show_alert=False)
+        result = reset_and_recreate_topics()
+        send_or_edit(call, f"♻️ <b>بازسازی تاپیک‌ها</b>\n\n{result}", back_button("admin:group"))
+        return
+
     # ── Admin: Settings ───────────────────────────────────────────────────────
     if data == "admin:settings":
         if not admin_has_perm(uid, "settings"):
@@ -3009,6 +3085,7 @@ def _dispatch_callback(call, uid, data):
         kb.add(types.InlineKeyboardButton("🎁 تست رایگان",      callback_data="adm:set:freetest"))
         kb.add(types.InlineKeyboardButton("📜 قوانین خرید",     callback_data="adm:set:rules"))
         kb.add(types.InlineKeyboardButton("🏪 مدیریت فروش",    callback_data="adm:set:shop"))
+        kb.add(types.InlineKeyboardButton("🏢 مدیریت گروه",    callback_data="admin:group"))
         kb.add(types.InlineKeyboardButton("💾 بکاپ",            callback_data="admin:backup"))
         kb.add(types.InlineKeyboardButton("🔙 بازگشت",        callback_data="admin:panel"))
         bot.answer_callback_query(call.id)
