@@ -23,6 +23,7 @@ from ..db import (
     get_registered_packages_stock, get_configs_paginated, count_configs,
     expire_config, add_config,
     assign_config_to_user, reserve_first_config, release_reserved_config,
+    update_config_field,
     get_payment, create_payment, approve_payment, reject_payment, complete_payment,
     get_agency_price, set_agency_price,
     get_agency_price_config, set_agency_price_config,
@@ -2721,7 +2722,10 @@ def _dispatch_callback(call, uid, data):
             kb.add(types.InlineKeyboardButton("❌ منقضی کردن", callback_data=f"adm:stk:exp:{config_id}:{row['package_id']}"))
         else:
             text += "\n\n⚠️ این سرویس منقضی شده است."
-        kb.add(types.InlineKeyboardButton("🗑 حذف کانفیگ", callback_data=f"adm:stk:del:{config_id}:{row['package_id']}"))
+        kb.row(
+            types.InlineKeyboardButton("✏️ ویرایش", callback_data=f"adm:stk:edt:{config_id}"),
+            types.InlineKeyboardButton("🗑 حذف کانفیگ", callback_data=f"adm:stk:del:{config_id}:{row['package_id']}"),
+        )
         kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"adm:stk:pk:{row['package_id']}"))
         bot.answer_callback_query(call.id)
         # Send with QR code
@@ -2741,11 +2745,99 @@ def _dispatch_callback(call, uid, data):
             send_or_edit(call, text, kb)
         return
 
+    if data.startswith("adm:stk:edt:"):
+        parts = data.split(":")
+        # adm:stk:edt:{config_id}                 → edit menu
+        # adm:stk:edt:pkg:{config_id}             → choose type for package edit
+        # adm:stk:edt:pkgt:{config_id}:{type_id}  → choose package within type
+        # adm:stk:edt:pkgp:{config_id}:{pkg_id}   → confirm package change
+        # adm:stk:edt:svc:{config_id}             → edit service name
+        # adm:stk:edt:cfg:{config_id}             → edit config text
+        # adm:stk:edt:inq:{config_id}             → edit inquiry link
+
+        sub = parts[3] if len(parts) > 3 else ""
+
+        if sub == "pkg":
+            config_id  = int(parts[4])
+            types_list = get_all_types()
+            kb = types.InlineKeyboardMarkup()
+            for t in types_list:
+                kb.add(types.InlineKeyboardButton(
+                    esc(t["name"]),
+                    callback_data=f"adm:stk:edt:pkgt:{config_id}:{t['id']}"
+                ))
+            kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"adm:stk:edt:{config_id}"))
+            bot.answer_callback_query(call.id)
+            send_or_edit(call, "🧩 نوع سرویس را انتخاب کنید:", kb)
+            return
+
+        if sub == "pkgt":
+            config_id = int(parts[4])
+            type_id   = int(parts[5])
+            pkgs = get_packages(type_id)
+            kb = types.InlineKeyboardMarkup()
+            for p in pkgs:
+                label = f"{esc(p['name'])} | {fmt_vol(p['volume_gb'])} | {fmt_dur(p['duration_days'])}"
+                kb.add(types.InlineKeyboardButton(
+                    label,
+                    callback_data=f"adm:stk:edt:pkgp:{config_id}:{p['id']}"
+                ))
+            kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"adm:stk:edt:pkg:{config_id}"))
+            bot.answer_callback_query(call.id)
+            send_or_edit(call, "📦 پکیج را انتخاب کنید:", kb)
+            return
+
+        if sub == "pkgp":
+            config_id  = int(parts[4])
+            package_id = int(parts[5])
+            pkg = get_package(package_id)
+            update_config_field(config_id, "package_id", package_id)
+            if pkg:
+                update_config_field(config_id, "type_id", pkg["type_id"])
+            bot.answer_callback_query(call.id, "✅ پکیج تغییر کرد.")
+            _fake_call(call, f"adm:stk:cfg:{config_id}")
+            return
+
+        if sub == "svc":
+            config_id = int(parts[4])
+            state_set(uid, "admin_cfg_edit_svc", config_id=config_id)
+            bot.answer_callback_query(call.id)
+            send_or_edit(call, "✏️ نام سرویس جدید را ارسال کنید:", back_button(f"adm:stk:edt:{config_id}"))
+            return
+
+        if sub == "cfg":
+            config_id = int(parts[4])
+            state_set(uid, "admin_cfg_edit_text", config_id=config_id)
+            bot.answer_callback_query(call.id)
+            send_or_edit(call, "💝 متن کانفیگ جدید را ارسال کنید:", back_button(f"adm:stk:edt:{config_id}"))
+            return
+
+        if sub == "inq":
+            config_id = int(parts[4])
+            state_set(uid, "admin_cfg_edit_inq", config_id=config_id)
+            bot.answer_callback_query(call.id)
+            send_or_edit(call,
+                "🔗 لینک استعلام جدید را ارسال کنید.\n"
+                "برای حذف لینک، <code>-</code> بفرستید.",
+                back_button(f"adm:stk:edt:{config_id}"))
+            return
+
+        # Default: show edit menu
+        config_id = int(sub)
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("📦 ویرایش پکیج",         callback_data=f"adm:stk:edt:pkg:{config_id}"))
+        kb.add(types.InlineKeyboardButton("🔮 ویرایش نام سرویس",    callback_data=f"adm:stk:edt:svc:{config_id}"))
+        kb.add(types.InlineKeyboardButton("💝 ویرایش متن کانفیگ",   callback_data=f"adm:stk:edt:cfg:{config_id}"))
+        kb.add(types.InlineKeyboardButton("🔗 ویرایش لینک استعلام", callback_data=f"adm:stk:edt:inq:{config_id}"))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت",               callback_data=f"adm:stk:cfg:{config_id}"))
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, "✏️ <b>ویرایش کانفیگ</b>\n\nچه چیزی را ویرایش می‌کنید؟", kb)
+        return
+
     if data.startswith("adm:stk:exp:"):
         parts = data.split(":")
         config_id  = int(parts[3])
         package_id = int(parts[4]) if len(parts) > 4 else 0
-        expire_config(config_id)
         # Notify buyer if any
         with get_conn() as conn:
             row = conn.execute("SELECT sold_to FROM configs WHERE id=?", (config_id,)).fetchone()

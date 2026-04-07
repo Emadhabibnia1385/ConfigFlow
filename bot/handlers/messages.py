@@ -30,7 +30,7 @@ from ..db import (
     get_all_panels, get_panel, add_panel, delete_panel,
     get_panel_packages, add_panel_package, delete_panel_package, update_panel_field,
     get_conn, create_pending_order, get_pending_order, search_users,
-    notify_first_start_if_needed,
+    notify_first_start_if_needed, update_config_field,
 )
 from ..gateways.base import is_gateway_available, is_card_info_complete
 from ..gateways.tetrapay import create_tetrapay_order, verify_tetrapay_order
@@ -397,6 +397,37 @@ def universal_handler(message):
             else:
                 bot.send_message(uid, "✅ پکیج با موفقیت ویرایش شد.")
                 _show_admin_types(message)
+            return
+
+        # ── Admin: Config edit (inline) ────────────────────────────────────────
+        if sn == "admin_cfg_edit_svc" and is_admin(uid):
+            val = (message.text or "").strip()
+            if not val:
+                bot.send_message(uid, "⚠️ نام نمی‌تواند خالی باشد.", reply_markup=back_button(f"adm:stk:edt:{sd['config_id']}"))
+                return
+            update_config_field(sd["config_id"], "service_name", urllib.parse.quote(val))
+            state_clear(uid)
+            bot.send_message(uid, f"✅ نام سرویس تغییر کرد:\n<b>{esc(val)}</b>",
+                             reply_markup=back_button(f"adm:stk:cfg:{sd['config_id']}"))
+            return
+
+        if sn == "admin_cfg_edit_text" and is_admin(uid):
+            val = (message.text or "").strip()
+            if not val:
+                bot.send_message(uid, "⚠️ متن کانفیگ نمی‌تواند خالی باشد.", reply_markup=back_button(f"adm:stk:edt:{sd['config_id']}"))
+                return
+            update_config_field(sd["config_id"], "config_text", val)
+            state_clear(uid)
+            bot.send_message(uid, "✅ متن کانفیگ بروزرسانی شد.",
+                             reply_markup=back_button(f"adm:stk:cfg:{sd['config_id']}"))
+            return
+
+        if sn == "admin_cfg_edit_inq" and is_admin(uid):
+            val = (message.text or "").strip()
+            update_config_field(sd["config_id"], "inquiry_link", "" if val == "-" else val)
+            state_clear(uid)
+            bot.send_message(uid, "✅ لینک استعلام بروزرسانی شد.",
+                             reply_markup=back_button(f"adm:stk:cfg:{sd['config_id']}"))
             return
 
         # ── Admin: Config add ──────────────────────────────────────────────────

@@ -714,6 +714,15 @@ def expire_config(config_id):
         conn.execute("UPDATE configs SET is_expired=1 WHERE id=?", (config_id,))
 
 
+def update_config_field(config_id, field, value):
+    """Update a single editable field on a config row."""
+    allowed = {"service_name", "config_text", "inquiry_link", "package_id", "type_id"}
+    if field not in allowed:
+        raise ValueError(f"Field '{field}' is not editable")
+    with get_conn() as conn:
+        conn.execute(f"UPDATE configs SET {field}=? WHERE id=?", (value, config_id))
+
+
 def assign_config_to_user(config_id, user_id, package_id, amount, payment_method, is_test=0):
     with get_conn() as conn:
         conn.execute(
