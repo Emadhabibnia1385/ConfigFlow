@@ -639,28 +639,28 @@ list_instances_table() {
     found=1
   done
   if [[ $found -eq 0 ]]; then
-    echo -e "${C}│${N}               ${Y}No bots installed${N}                              ${C}│${N}"
+    echo -e "${C}│${N}               ${Y}No bots installed${N}                             
   fi
-  echo -e "${C}└────┴────────────────────────────┴───────────────┴──────────────────────┘${N}"
+  echo -e "${C}└────┴────────────────────────────┴───────────────┴──────────────────────${N}"
   echo ""
 }
 
 show_global_menu() {
-  echo -e "${C}┌──────────────────────────────────────────┐${N}"
-  echo -e "${C}│${N}       ${B}${W}🌐 Main Menu — ConfigFlow${N}         ${C}│${N}"
-  echo -e "${C}├──────────────────────────────────────────┤${N}"
-  echo -e "${C}│${N}  ${B}${G}m)${N} 🤖 Manage a bot (select number)    ${C}│${N}"
-  echo -e "${C}├──────────────────────────────────────────┤${N}"
-  echo -e "${C}│${N}  ${B}${Y}1)${N} 🔄 Update all bots                    ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${Y}2)${N} ⚡ Enable auto-update for all         ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${Y}3)${N} 🔕 Disable auto-update for all     ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${Y}4)${N} 🔁 Restart all bots                     ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${Y}5)${N} ▶️  Start all bots                     ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${Y}6)${N} ⏹️  Stop all bots                     ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${R}7)${N} 🗑️  Remove all bots                          ${C}│${N}"
-  echo -e "${C}├──────────────────────────────────────────┤${N}"
-  echo -e "${C}│${N}  ${B}${R}0)${N} 🚪 Exit                            ${C}│${N}"
-  echo -e "${C}└──────────────────────────────────────────┘${N}"
+  echo -e "${C}┌──────────────────────────────────────────${N}"
+  echo -e "${C}│${N}       ${B}${W}🌐 Main Menu — ConfigFlow${N}         
+  echo -e "${C}├──────────────────────────────────────────${N}"
+  echo -e "${C}│${N}  ${B}${G}m)${N} 🤖 Manage a bot (select number)    
+  echo -e "${C}├──────────────────────────────────────────${N}"
+  echo -e "${C}│${N}  ${B}${Y}1)${N} 🔄 Update all bots                   
+  echo -e "${C}│${N}  ${B}${Y}2)${N} ⚡ Enable auto-update for all       
+  echo -e "${C}│${N}  ${B}${Y}3)${N} 🔕 Disable auto-update for all    
+  echo -e "${C}│${N}  ${B}${Y}4)${N} 🔁 Restart all bots                  
+  echo -e "${C}│${N}  ${B}${Y}5)${N} ▶️  Start all bots                    
+  echo -e "${C}│${N}  ${B}${Y}6)${N} ⏹️  Stop all bots                    
+  echo -e "${C}│${N}  ${B}${R}7)${N} 🗑️  Remove all bots                         
+  echo -e "${C}├──────────────────────────────────────────${N}"
+  echo -e "${C}│${N}  ${B}${R}0)${N} 🚪 Exit                            
+  echo -e "${C}└──────────────────────────────────────────${N}"
   echo ""
 }
 
@@ -668,32 +668,32 @@ show_bot_header() {
   local au_status; au_status="$(get_autoupdate_status_label "$INSTANCE_NUM")"
   local bot_status; bot_status="$(get_service_status "$INSTANCE_NUM")"
   local last_upd; last_upd="$(get_last_update "$INSTANCE_NUM")"
-  echo -e "${C}╔══════════════════════════════════════════════════════════════════════════╗${N}"
-  echo -e "${C}║${N}  🤖 ${B}${W}${BOT_NAME}${N}  (instance ${INSTANCE_NUM})                                        ${C}║${N}"
-  echo -e "${C}║${N}  Status: $bot_status   │  Auto-update: $au_status   │  Last update: ${W}${last_upd}${N}  ${C}║${N}"
-  echo -e "${C}╚══════════════════════════════════════════════════════════════════════════╝${N}"
+  echo -e "${C}╔══════════════════════════════════════════════════════════════════════════${N}"
+  echo -e "${C}║${N}  🤖 ${B}${W}${BOT_NAME}${N}  (instance ${INSTANCE_NUM})                                        
+  echo -e "${C}║${N}  Status: $bot_status   │  Auto-update: $au_status   │  Last update: ${W}${last_upd}${N}  
+  echo -e "${C}╚══════════════════════════════════════════════════════════════════════════${N}"
   echo ""
 }
 
 show_bot_menu() {
   local au_label; au_label="$(get_autoupdate_status_label "$INSTANCE_NUM")"
-  echo -e "${C}┌──────────────────────────────────────┐${N}"
-  echo -e "${C}│${N}  ${B}${G}1)${N} 📦 Install / Reinstall                     ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${G}2)${N} 🔄 Update from GitHub                 ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${G}3)${N} ✏️  Edit settings (.env)            ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${G}4)${N} ▶️  Start                                       ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${G}5)${N} ⏹️  Stop                                       ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${G}6)${N} 🔁 Restart                                       ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${G}7)${N} 📜 Live log                                      ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${G}8)${N} 📊 Service status                             ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${G}9)${N} 🗑️  Remove this bot                          ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${C}a)${N} ⚡ Auto-update: $au_label           ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${C}u)${N} 📋 Auto-update log                    ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${M}i)${N} 🇮🇷 Install Iran Worker (3x-ui)      ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${M}w)${N} 📋 Worker log                                ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${M}W)${N} 🔁 Restart                  Worker              ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${R}b)${N} 🔙 Back to main menu               ${C}│${N}"
-  echo -e "${C}└───────────────────────────────────────────────────────────┘${N}"
+  echo -e "${C}┌──────────────────────────────────────${N}"
+  echo -e "${C}│${N}  ${B}${G}1)${N} 📦 Install / Reinstall                     
+  echo -e "${C}│${N}  ${B}${G}2)${N} 🔄 Update from GitHub                 
+  echo -e "${C}│${N}  ${B}${G}3)${N} ✏️  Edit settings (.env)           
+  echo -e "${C}│${N}  ${B}${G}4)${N} ▶️  Start                                       
+  echo -e "${C}│${N}  ${B}${G}5)${N} ⏹️  Stop                                     
+  echo -e "${C}│${N}  ${B}${G}6)${N} 🔁 Restart                                      
+  echo -e "${C}│${N}  ${B}${G}7)${N} 📜 Live log                                    
+  echo -e "${C}│${N}  ${B}${G}8)${N} 📊 Service status                             
+  echo -e "${C}│${N}  ${B}${G}9)${N} 🗑️  Remove this bot                       
+  echo -e "${C}│${N}  ${B}${C}a)${N} ⚡ Auto-update: $au_label          
+  echo -e "${C}│${N}  ${B}${C}u)${N} 📋 Auto-update log                   
+  echo -e "${C}│${N}  ${B}${M}i)${N} 🇮🇷 Install Iran Worker (3x-ui)     
+  echo -e "${C}│${N}  ${B}${M}w)${N} 📋 Worker log                                
+  echo -e "${C}│${N}  ${B}${M}W)${N} 🔁 Restart                  Worker              
+  echo -e "${C}│${N}  ${B}${R}b)${N} 🔙 Back to main menu               
+  echo -e "${C}└───────────────────────────────────────────────────────────${N}"
   echo ""
 }
 
