@@ -3408,7 +3408,8 @@ def _dispatch_callback(call, uid, data):
         kb.add(types.InlineKeyboardButton("📜 قوانین خرید",     callback_data="adm:set:rules"))
         kb.add(types.InlineKeyboardButton("🏪 مدیریت فروش",    callback_data="adm:set:shop"))
         kb.add(types.InlineKeyboardButton("🏢 مدیریت گروه",    callback_data="admin:group"))
-        kb.add(types.InlineKeyboardButton("💾 بکاپ",            callback_data="admin:backup"))
+        kb.add(types.InlineKeyboardButton("� مدیریت اعلان‌ها",  callback_data="adm:notif"))
+        kb.add(types.InlineKeyboardButton("�💾 بکاپ",            callback_data="admin:backup"))
         kb.add(types.InlineKeyboardButton("🔙 بازگشت",        callback_data="admin:panel"))
         bot.answer_callback_query(call.id)
         send_or_edit(call, "⚙️ <b>تنظیمات</b>", kb)
@@ -3446,7 +3447,8 @@ def _dispatch_callback(call, uid, data):
             kb.add(types.InlineKeyboardButton("🏢 مدیریت گروه",    callback_data="admin:group"))
             kb.add(types.InlineKeyboardButton(f"{agency_icon} درخواست نمایندگی", callback_data="adm:set:agency_toggle"))
             kb.add(types.InlineKeyboardButton("📊 تخفیف پیش‌فرض نمایندگی", callback_data="adm:set:agency_defpct"))
-            kb.add(types.InlineKeyboardButton("💾 بکاپ",            callback_data="admin:backup"))
+            kb.add(types.InlineKeyboardButton("� مدیریت اعلان‌ها",  callback_data="adm:notif"))
+            kb.add(types.InlineKeyboardButton("�💾 بکاپ",            callback_data="admin:backup"))
             kb.add(types.InlineKeyboardButton("🔙 بازگشت",        callback_data="admin:panel"))
             send_or_edit(call, "⚙️ <b>تنظیمات</b>", kb)
         except Exception:
@@ -3466,6 +3468,132 @@ def _dispatch_callback(call, uid, data):
             "درصد جدید را وارد کنید (عدد بین 0 تا 100):",
             back_button("admin:settings"))
         return
+
+    # ── Notification Management ───────────────────────────────────────────────
+    # Notification types: (key, label)
+    _NOTIF_TYPES = [
+        ("new_users",        "👋 کاربر جدید"),
+        ("payment_approval", "💳 تأیید پرداخت"),
+        ("renewal_request",  "♻️ درخواست تمدید"),
+        ("purchase_log",     "📦 لاگ خرید"),
+        ("renewal_log",      "🔄 لاگ تمدید"),
+        ("wallet_log",       "💰 لاگ کیف‌پول"),
+        ("test_report",      "🧪 گزارش تست"),
+        ("broadcast_report", "📢 اطلاع‌رسانی"),
+        ("error_log",        "❌ گزارش خطا"),
+        ("backup",           "💾 بکاپ"),
+        ("agency_request",   "🤝 درخواست نمایندگی"),
+    ]
+
+    if data == "adm:notif":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        bot.answer_callback_query(call.id)
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("📢 اعلان‌های گروه",  callback_data="adm:notif:grp"))
+        kb.add(types.InlineKeyboardButton("🤖 اعلان‌های ربات",  callback_data="adm:notif:bot"))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:settings"))
+        send_or_edit(call,
+            "🔔 <b>مدیریت اعلان‌ها</b>\n\n"
+            "انتخاب کنید کدام اعلان‌ها از کجا ارسال شوند:",
+            kb)
+        return
+
+    if data == "adm:notif:grp":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        bot.answer_callback_query(call.id)
+        kb = types.InlineKeyboardMarkup()
+        for key, label in _NOTIF_TYPES:
+            on = setting_get(f"notif_grp_{key}", "1") == "1"
+            icon = "✅" if on else "❌"
+            kb.add(types.InlineKeyboardButton(
+                f"{icon} {label}",
+                callback_data=f"adm:notif:gtg:{key}"))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="adm:notif"))
+        send_or_edit(call,
+            "📢 <b>اعلان‌های گروه</b>\n\n"
+            "انتخاب کنید کدام اعلان‌ها در تاپیک‌های گروه ارسال شوند:\n"
+            "✅ = فعال  |  ❌ = غیرفعال",
+            kb)
+        return
+
+    if data == "adm:notif:bot":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        bot.answer_callback_query(call.id)
+        kb = types.InlineKeyboardMarkup()
+        for key, label in _NOTIF_TYPES:
+            on = setting_get(f"notif_bot_{key}", "1") == "1"
+            icon = "✅" if on else "❌"
+            kb.add(types.InlineKeyboardButton(
+                f"{icon} {label}",
+                callback_data=f"adm:notif:btg:{key}"))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="adm:notif"))
+        send_or_edit(call,
+            "🤖 <b>اعلان‌های ربات</b>\n\n"
+            "انتخاب کنید کدام اعلان‌ها به صورت مستقیم برای ادمین‌ها ارسال شوند:\n"
+            "✅ = فعال  |  ❌ = غیرفعال",
+            kb)
+        return
+
+    if data.startswith("adm:notif:gtg:"):
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        key = data[len("adm:notif:gtg:"):]
+        cur = setting_get(f"notif_grp_{key}", "1")
+        new = "0" if cur == "1" else "1"
+        setting_set(f"notif_grp_{key}", new)
+        label_map = dict(_NOTIF_TYPES)
+        lbl = label_map.get(key, key)
+        bot.answer_callback_query(call.id, f"{'فعال' if new=='1' else 'غیرفعال'} شد: {lbl}")
+        # re-render group list
+        kb = types.InlineKeyboardMarkup()
+        for k, l in _NOTIF_TYPES:
+            on = setting_get(f"notif_grp_{k}", "1") == "1"
+            icon = "✅" if on else "❌"
+            kb.add(types.InlineKeyboardButton(
+                f"{icon} {l}",
+                callback_data=f"adm:notif:gtg:{k}"))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="adm:notif"))
+        send_or_edit(call,
+            "📢 <b>اعلان‌های گروه</b>\n\n"
+            "انتخاب کنید کدام اعلان‌ها در تاپیک‌های گروه ارسال شوند:\n"
+            "✅ = فعال  |  ❌ = غیرفعال",
+            kb)
+        return
+
+    if data.startswith("adm:notif:btg:"):
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        key = data[len("adm:notif:btg:"):]
+        cur = setting_get(f"notif_bot_{key}", "1")
+        new = "0" if cur == "1" else "1"
+        setting_set(f"notif_bot_{key}", new)
+        label_map = dict(_NOTIF_TYPES)
+        lbl = label_map.get(key, key)
+        bot.answer_callback_query(call.id, f"{'فعال' if new=='1' else 'غیرفعال'} شد: {lbl}")
+        # re-render bot list
+        kb = types.InlineKeyboardMarkup()
+        for k, l in _NOTIF_TYPES:
+            on = setting_get(f"notif_bot_{k}", "1") == "1"
+            icon = "✅" if on else "❌"
+            kb.add(types.InlineKeyboardButton(
+                f"{icon} {l}",
+                callback_data=f"adm:notif:btg:{k}"))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="adm:notif"))
+        send_or_edit(call,
+            "🤖 <b>اعلان‌های ربات</b>\n\n"
+            "انتخاب کنید کدام اعلان‌ها به صورت مستقیم برای ادمین‌ها ارسال شوند:\n"
+            "✅ = فعال  |  ❌ = غیرفعال",
+            kb)
+        return
+    # ── End Notification Management ───────────────────────────────────────────
 
     if data == "adm:set:support":
         support_raw = setting_get("support_username", "")

@@ -115,6 +115,9 @@ def reset_and_recreate_topics():
 # ── Send helpers ───────────────────────────────────────────────────────────────
 def send_to_topic(topic_key, text, parse_mode="HTML", reply_markup=None):
     """Send a text message to the specified topic. Silent on any error."""
+    # Check if this notification type is enabled for group
+    if setting_get(f"notif_grp_{topic_key}", "1") != "1":
+        return
     group_id = get_group_id()
     if not group_id:
         return

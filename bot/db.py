@@ -326,6 +326,8 @@ def notify_first_start_if_needed(tg_user):
         f"آیدی عددی: <code>{tg_user.id}</code>"
     )
     for admin_id in ADMIN_IDS:
+        if setting_get("notif_bot_new_users", "1") != "1":
+            break
         try:
             bot.send_message(admin_id, text)
         except Exception:
