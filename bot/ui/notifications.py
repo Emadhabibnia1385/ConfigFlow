@@ -6,6 +6,7 @@ pending-order fulfillment.
 import io
 import json
 import qrcode
+import urllib.parse
 from telebot import types
 
 from ..config import ADMIN_IDS
@@ -26,10 +27,11 @@ def deliver_purchase_message(chat_id, purchase_id):
         bot.send_message(chat_id, "❌ اطلاعات خرید یافت نشد.")
         return
     cfg          = item["config_text"]
+    service_name = urllib.parse.unquote(item["service_name"] or "")
     expired_note = "\n\n⚠️ <b>این سرویس توسط ادمین منقضی شده است.</b>" if item["is_expired"] else ""
     text = (
         f"✅ <b>{'تست رایگان' if item['is_test'] else 'سرویس شما آماده است'}</b>\n\n"
-        f"🔮 نام سرویس: <b>{esc(item['service_name'])}</b>\n"
+        f"🔮 نام سرویس: <b>{esc(service_name)}</b>\n"
         f"🧩 نوع سرویس: <b>{esc(item['type_name'])}</b>\n"
         f"🔋 حجم: <b>{item['volume_gb']}</b> گیگ\n"
         f"⏰ مدت: <b>{item['duration_days']}</b> روز\n\n"
