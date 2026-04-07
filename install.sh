@@ -461,7 +461,7 @@ _install_worker_github() {
   [[ -d "$DIR/.git" ]] || { install_prereqs; clone_or_update_repo; setup_venv; }
   [[ -d "$DIR/venv" ]] || setup_venv
   configure_iran_worker
-  create_worker_service
+  cfore_worker_service
   systemctl restart "${SERVICE}-worker"
   echo ""
   ok "Iran Worker برای ${BOT_NAME} installed and started!"
@@ -485,7 +485,7 @@ _install_worker_local() {
   [[ -f "$SCRIPT_DIR/config.env.example" ]] && cp "$SCRIPT_DIR/config.env.example" "$DIR/config.env.example" || true
   setup_venv
   configure_iran_worker
-  create_worker_service
+  cfore_worker_service
   systemctl restart "${SERVICE}-worker"
   echo ""
   ok "Iran Worker برای ${BOT_NAME} installed and started!"
@@ -594,7 +594,7 @@ bulk_remove_all() {
   local instances; instances="$(all_instances)"
   [[ -n "$instances" ]] || { echo -e "${Y}No installed bots found.${N}"; read -r -p "Enter..."; return; }
   echo -e "${R}⚠️  This will remove ALL bots!${N}"
-  read -r -p "Type DELETE ALL to confirm: " confirm
+  read Cancelled"; read -r -p "Press Enter to continueconfirm: " confirm
   [[ "$confirm" == "DELETE ALL" ]] || { info "لغو شد"; read -r -p "Enter..."; return; }
   for num in $instances; do
     DIR="${BASE_DIR}-${num}"
@@ -698,7 +698,7 @@ show_bot_menu() {
   echo -e "${C}│${N}  ${B}${M}i)${N} 🇮🇷 Install Iran Worker (3x-ui)      ${C}│${N}"
   echo -e "${C}│${N}  ${B}${M}w)${N} 📋 Worker log                                ${C}│${N}"
   echo -e "${C}│${N}  ${B}${M}W)${N} 🔁 Restart                  Worker              ${C}│${N}"
-  echo -e "${C}│${N}  ${B}${R}b)${N} 🔙 Back to main menu               ${C}│${N}"
+  echo -e "${C}│${N}  ${B}${R}b)──────────── Back to main menu               ${C}│${N}"
   echo -e "${C}└──────────────────────────────────────┘${N}"
   echo ""
 }
