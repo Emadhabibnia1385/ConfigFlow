@@ -31,7 +31,7 @@ def create_tronpays_rial_invoice(amount_toman, hash_id, description=""):
         "amount":       int(amount_toman),
         "callback_url": callback_url,
     }).encode("utf-8")
-    url = f"{TRONPAYS_RIAL_BASE_URL}/api/invoice/create"
+    url = f"{TRONPAYS_RIAL_BASE_URL}/invoice/create"
     req = urllib.request.Request(
         url,
         data=payload,
@@ -45,10 +45,10 @@ def create_tronpays_rial_invoice(amount_toman, hash_id, description=""):
         with urllib.request.urlopen(req, timeout=15) as resp:
             raw = resp.read().decode("utf-8")
             result = json.loads(raw)
-        # API returns the invoice ID/URL as a plain string
-        if isinstance(result, str) and result:
-            return True, result
-        return False, {"error": str(result)}
+        if isinstance(result, dict) and result.get("status") == 200:
+            return True, {"invoice_id": result["invoice_id"], "invoice_url": result["invoice_url"]}
+        msg = result.get("message", str(result))[:300] if isinstance(result, dict) else str(result)[:300]
+        return False, {"error": msg}
     except urllib.error.HTTPError as e:
         try:
             body = e.read().decode("utf-8")
@@ -71,7 +71,7 @@ def check_tronpays_rial_invoice(invoice_id):
         "api_key":    api_key,
         "invoice_id": invoice_id,
     }).encode("utf-8")
-    url = f"{TRONPAYS_RIAL_BASE_URL}/api/invoice/check"
+    url = f"{TRONPAYS_RIAL_BASE_URL}/invoice/check"
     req = urllib.request.Request(
         url,
         data=payload,
@@ -98,9 +98,7 @@ def check_tronpays_rial_invoice(invoice_id):
 
 
 def is_tronpays_paid(status) -> bool:
-    """Return True if the TronPays status string indicates a successful payment."""
-    if isinstance(status, str):
-        return status.lower() in ("paid", "completed", "success", "1", "true")
-    if isinstance(status, (int, float)):
-        return bool(status)
+    """Return True if the TronPays check response indicates a successful payment."""
+    if isinstance(status, dict):
+        return status.get("status") == 200 and status.get("paid") is True
     return False

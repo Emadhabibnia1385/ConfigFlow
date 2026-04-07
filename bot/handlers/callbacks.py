@@ -1057,7 +1057,8 @@ def _dispatch_callback(call, uid, data):
                 "💡 مطمئن شوید کلید API صحیح وارد شده باشد.",
                 back_button(f"renew:{purchase_id}"))
             return
-        invoice_id = result  # plain string returned by TronPays
+        invoice_id = result["invoice_id"]
+        invoice_url = result["invoice_url"]
         payment_id = create_payment("renewal", uid, package_id, price, "tronpays_rial", status="pending",
                                     config_id=item["config_id"])
         with get_conn() as conn:
@@ -1072,8 +1073,7 @@ def _dispatch_callback(call, uid, data):
             "در غیر این صورت دکمه «بررسی پرداخت» را بزنید."
         )
         kb = types.InlineKeyboardMarkup()
-        if invoice_id.startswith("http"):
-            kb.add(types.InlineKeyboardButton("💳 پرداخت از درگاه TronPays", url=invoice_id))
+        kb.add(types.InlineKeyboardButton("💳 پرداخت از درگاه TronPays", url=invoice_url))
         kb.add(types.InlineKeyboardButton("🔍 بررسی پرداخت", callback_data=f"rpay:tronpays_rial:verify:{payment_id}"))
         bot.answer_callback_query(call.id)
         send_or_edit(call, text, kb)
@@ -1604,7 +1604,8 @@ def _dispatch_callback(call, uid, data):
                 "💡 مطمئن شوید کلید API صحیح وارد شده باشد.",
                 back_button(f"buy:p:{package_id}"))
             return
-        invoice_id = result  # plain string returned by TronPays
+        invoice_id = result["invoice_id"]
+        invoice_url = result["invoice_url"]
         payment_id = create_payment("config_purchase", uid, package_id, price, "tronpays_rial", status="pending")
         with get_conn() as conn:
             conn.execute("UPDATE payments SET receipt_text=? WHERE id=?", (invoice_id, payment_id))
@@ -1617,8 +1618,7 @@ def _dispatch_callback(call, uid, data):
             "در غیر این صورت دکمه «بررسی پرداخت» را بزنید."
         )
         kb = types.InlineKeyboardMarkup()
-        if invoice_id.startswith("http"):
-            kb.add(types.InlineKeyboardButton("💳 پرداخت از درگاه TronPays", url=invoice_id))
+        kb.add(types.InlineKeyboardButton("💳 پرداخت از درگاه TronPays", url=invoice_url))
         kb.add(types.InlineKeyboardButton("🔍 بررسی پرداخت", callback_data=f"pay:tronpays_rial:verify:{payment_id}"))
         bot.answer_callback_query(call.id)
         send_or_edit(call, text, kb)
@@ -1851,7 +1851,8 @@ def _dispatch_callback(call, uid, data):
                 "💡 مطمئن شوید کلید API صحیح وارد شده باشد.",
                 back_button("wallet:charge"))
             return
-        invoice_id = result
+        invoice_id = result["invoice_id"]
+        invoice_url = result["invoice_url"]
         payment_id = create_payment("wallet_charge", uid, None, amount, "tronpays_rial", status="pending")
         with get_conn() as conn:
             conn.execute("UPDATE payments SET receipt_text=? WHERE id=?", (invoice_id, payment_id))
@@ -1864,8 +1865,7 @@ def _dispatch_callback(call, uid, data):
             "در غیر این صورت دکمه «بررسی پرداخت» را بزنید."
         )
         kb = types.InlineKeyboardMarkup()
-        if invoice_id.startswith("http"):
-            kb.add(types.InlineKeyboardButton("💳 پرداخت از درگاه TronPays", url=invoice_id))
+        kb.add(types.InlineKeyboardButton("💳 پرداخت از درگاه TronPays", url=invoice_url))
         kb.add(types.InlineKeyboardButton("🔍 بررسی پرداخت", callback_data=f"pay:tronpays_rial:verify:{payment_id}"))
         bot.answer_callback_query(call.id)
         send_or_edit(call, text, kb)
