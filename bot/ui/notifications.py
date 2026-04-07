@@ -62,12 +62,12 @@ def deliver_purchase_message(chat_id, purchase_id):
     bot.send_photo(chat_id, bio, caption=text, parse_mode="HTML", reply_markup=kb)
 
     # also mirror to is_test=1 → test_report topic, else → purchase_log topic
-    if item.get("is_test"):
+    if item["is_test"]:
         send_to_topic("test_report",
             f"🧪 <b>تست رایگان</b>\n\n"
-            f"👤 کاربر: {esc(item.get('full_name', str(chat_id)))}\n"
+            f"👤 کاربر: <code>{chat_id}</code>\n"
             f"🧩 نوع: {esc(item['type_name'])}\n"
-            f"📦 پکیج: {esc(item['package_name'] if 'package_name' in item.keys() else '')}\n"
+            f"📦 پکیج: {esc(item['package_name'])}\n"
             f"🔮 سرویس: {esc(service_name)}"
         )
     type_desc = item["type_description"] if item["type_description"] else ""
