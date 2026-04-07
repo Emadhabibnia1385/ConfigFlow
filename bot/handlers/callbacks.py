@@ -2160,7 +2160,8 @@ def _dispatch_callback(call, uid, data):
                 mark = "🔴"
             else:
                 mark = "🟢"
-            kb.add(types.InlineKeyboardButton(f"{mark} {c['service_name']}", callback_data=f"adm:stk:cfg:{c['id']}"))
+            svc = urllib.parse.unquote(c["service_name"] or "")
+            kb.add(types.InlineKeyboardButton(f"{mark} {svc}", callback_data=f"adm:stk:cfg:{c['id']}"))
         nav_row = []
         if page > 0:
             nav_row.append(types.InlineKeyboardButton("⬅️ قبلی", callback_data=f"adm:stk:all:{kind_str}:{page-1}"))
@@ -2300,7 +2301,8 @@ def _dispatch_callback(call, uid, data):
                 mark = "🔴"
             else:
                 mark = "🟢"
-            kb.add(types.InlineKeyboardButton(f"{mark} {c['service_name']}", callback_data=f"adm:stk:cfg:{c['id']}"))
+            svc = urllib.parse.unquote(c["service_name"] or "")
+            kb.add(types.InlineKeyboardButton(f"{mark} {svc}", callback_data=f"adm:stk:cfg:{c['id']}"))
         # Pagination
         nav_row = []
         if page > 0:
@@ -2874,8 +2876,9 @@ def _dispatch_callback(call, uid, data):
             if purchases:
                 for p in purchases:
                     expired_mark = " ❌" if p["is_expired"] else ""
+                    svc = urllib.parse.unquote(p["service_name"] or "")
                     kb.add(types.InlineKeyboardButton(
-                        f"{p['service_name']}{expired_mark}",
+                        f"{svc}{expired_mark}",
                         callback_data=f"adm:usrcfg:{target_id}:{p['config_id']}"
                     ))
             kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"adm:usr:v:{target_id}"))
@@ -2978,7 +2981,8 @@ def _dispatch_callback(call, uid, data):
         cfgs       = get_available_configs_for_package(package_id)
         kb         = types.InlineKeyboardMarkup()
         for c in cfgs[:50]:
-            kb.add(types.InlineKeyboardButton(c["service_name"],
+            svc = urllib.parse.unquote(c["service_name"] or "")
+            kb.add(types.InlineKeyboardButton(svc,
                                               callback_data=f"adm:acfg:do:{target_id}:{c['id']}"))
         kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"adm:usr:v:{target_id}"))
         bot.answer_callback_query(call.id)
