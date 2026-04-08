@@ -1315,6 +1315,21 @@ def universal_handler(message):
                 return
             add_pinned_message(text)
             state_clear(uid)
+            # Broadcast to all users and pin in each chat
+            users = get_users()
+            sent = 0
+            pinned = 0
+            for u in users:
+                try:
+                    sent_msg = bot.send_message(u["user_id"], text, parse_mode="HTML")
+                    sent += 1
+                    try:
+                        bot.pin_chat_message(u["user_id"], sent_msg.message_id, disable_notification=True)
+                        pinned += 1
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
             from ..db import get_all_pinned_messages
             from telebot import types as _types
             pins = get_all_pinned_messages()
@@ -1329,7 +1344,10 @@ def universal_handler(message):
                 )
             kb.add(_types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:settings"))
             count_text = f"{len(pins)} پیام" if pins else "هیچ پیامی ثبت نشده"
-            bot.send_message(uid, f"✅ پیام پین اضافه شد.\n\n📌 <b>پیام‌های پین شده</b>\n\n{count_text}", reply_markup=kb, parse_mode="HTML")
+            bot.send_message(uid,
+                f"✅ پیام پین ارسال شد.\n📤 فرستاده شده: {sent} کاربر\n📌 پین شده: {pinned} کاربر\n\n"
+                f"📌 <b>پیام‌های پین شده</b>\n\n{count_text}",
+                reply_markup=kb, parse_mode="HTML")
             return
 
         if sn == "admin_pin_edit" and admin_has_perm(uid, "settings"):
