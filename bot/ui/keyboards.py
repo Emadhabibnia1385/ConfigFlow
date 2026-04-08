@@ -21,6 +21,8 @@ def kb_main(user_id):
         types.InlineKeyboardButton("👤 حساب کاربری",    callback_data="profile"),
         types.InlineKeyboardButton("💳 شارژ کیف پول",   callback_data="wallet:charge"),
     )
+    if setting_get("referral_enabled", "1") == "1":
+        kb.add(types.InlineKeyboardButton("🎁 دعوت دوستان", callback_data="referral:menu"))
     kb.add(types.InlineKeyboardButton("🎧 ارتباط با پشتیبانی", callback_data="support"))
     if setting_get("agency_request_enabled", "1") == "1":
         kb.add(types.InlineKeyboardButton("🤝 درخواست نمایندگی", callback_data="agency:request"))

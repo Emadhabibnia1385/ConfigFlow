@@ -698,6 +698,60 @@ def universal_handler(message):
             bot.send_message(uid, "✅ توضیحات پشتیبانی ذخیره شد.", reply_markup=back_button("adm:set:support"))
             return
 
+        # ── Referral settings inputs ───────────────────────────────────────────
+        if sn == "admin_ref_banner" and is_admin(uid):
+            if message.photo:
+                photo_id = message.photo[-1].file_id
+                caption = (message.caption or "").strip()
+                setting_set("referral_banner_photo", photo_id)
+                setting_set("referral_banner_text", caption)
+            else:
+                setting_set("referral_banner_text", (message.text or "").strip())
+                setting_set("referral_banner_photo", "")
+            state_clear(uid)
+            bot.send_message(uid, "✅ بنر اشتراک‌گذاری ذخیره شد.", reply_markup=back_button("adm:ref:settings"))
+            return
+
+        if sn == "admin_ref_sr_count" and is_admin(uid):
+            count = parse_int(message.text or "")
+            if not count or count <= 0:
+                bot.send_message(uid, "⚠️ عدد معتبر وارد کنید.", reply_markup=back_button("adm:ref:settings"))
+                return
+            setting_set("referral_start_reward_count", str(count))
+            state_clear(uid)
+            bot.send_message(uid, f"✅ تعداد زیرمجموعه برای هدیه استارت: {count}", reply_markup=back_button("adm:ref:settings"))
+            return
+
+        if sn == "admin_ref_sr_amount" and is_admin(uid):
+            amount = parse_int(message.text or "")
+            if amount is None or amount < 0:
+                bot.send_message(uid, "⚠️ مبلغ معتبر وارد کنید.", reply_markup=back_button("adm:ref:settings"))
+                return
+            setting_set("referral_start_reward_amount", str(amount))
+            state_clear(uid)
+            bot.send_message(uid, f"✅ مبلغ هدیه استارت: {fmt_price(amount)} تومان", reply_markup=back_button("adm:ref:settings"))
+            return
+
+        if sn == "admin_ref_pr_count" and is_admin(uid):
+            count = parse_int(message.text or "")
+            if not count or count <= 0:
+                bot.send_message(uid, "⚠️ عدد معتبر وارد کنید.", reply_markup=back_button("adm:ref:settings"))
+                return
+            setting_set("referral_purchase_reward_count", str(count))
+            state_clear(uid)
+            bot.send_message(uid, f"✅ تعداد خرید برای هدیه: {count}", reply_markup=back_button("adm:ref:settings"))
+            return
+
+        if sn == "admin_ref_pr_amount" and is_admin(uid):
+            amount = parse_int(message.text or "")
+            if amount is None or amount < 0:
+                bot.send_message(uid, "⚠️ مبلغ معتبر وارد کنید.", reply_markup=back_button("adm:ref:settings"))
+                return
+            setting_set("referral_purchase_reward_amount", str(amount))
+            state_clear(uid)
+            bot.send_message(uid, f"✅ مبلغ هدیه خرید: {fmt_price(amount)} تومان", reply_markup=back_button("adm:ref:settings"))
+            return
+
         if sn == "admin_set_card" and is_admin(uid):
             setting_set("payment_card", normalize_text_number(message.text or ""))
             state_clear(uid)

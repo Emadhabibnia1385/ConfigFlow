@@ -15,6 +15,10 @@ from ..db import (
     assign_config_to_user, get_available_configs_for_package,
     fulfill_pending_order, get_waiting_pending_orders_for_package,
     get_pending_order, get_all_admin_users, setting_get,
+    count_referrals, get_unrewarded_start_referrals,
+    mark_start_reward_given, get_unrewarded_purchase_referees,
+    mark_purchase_reward_given, get_referral_by_referee,
+    update_balance,
 )
 from ..helpers import esc, fmt_price
 from ..bot_instance import bot
@@ -74,6 +78,13 @@ def deliver_purchase_message(chat_id, purchase_id):
     type_desc = item["type_description"] if item["type_description"] else ""
     if type_desc:
         bot.send_message(chat_id, f"📌 <b>توضیحات سرویس:</b>\n\n{esc(type_desc)}", parse_mode="HTML")
+
+    # Check referral purchase reward (only for non-test purchases)
+    if not item["is_test"]:
+        try:
+            check_and_give_referral_purchase_reward(chat_id)
+        except Exception:
+            pass
 
 
 # ── Admin notifications ────────────────────────────────────────────────────────
@@ -278,3 +289,89 @@ def auto_fulfill_pending_orders(package_id):
             pass
         fulfilled_count += 1
     return fulfilled_count
+
+
+# ── Referral Reward Logic ──────────────────────────────────────────────────────
+def _give_referral_reward(referrer_id, reward_prefix):
+    """Give a referral reward (wallet charge or config) to referrer_id.
+    reward_prefix: 'referral_start_reward' or 'referral_purchase_reward'
+    """
+    reward_type = setting_get(f"{reward_prefix}_type", "wallet")
+    if reward_type == "wallet":
+        amount = int(setting_get(f"{reward_prefix}_amount", "0"))
+        if amount > 0:
+            update_balance(referrer_id, amount)
+            try:
+                bot.send_message(
+                    referrer_id,
+                    f"🎁 <b>هدیه زیرمجموعه‌گیری!</b>\n\n"
+                    f"💰 مبلغ <b>{fmt_price(amount)}</b> تومان به کیف پول شما اضافه شد.",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+    else:
+        # Config reward
+        pkg_id = setting_get(f"{reward_prefix}_package", "")
+        if not pkg_id or not pkg_id.isdigit():
+            return
+        pkg = get_package(int(pkg_id))
+        if not pkg:
+            return
+        available = get_available_configs_for_package(int(pkg_id))
+        if not available:
+            try:
+                bot.send_message(
+                    referrer_id,
+                    "🎁 <b>هدیه زیرمجموعه‌گیری!</b>\n\n"
+                    "⚠️ متأسفانه موجودی کانفیگ هدیه تمام شده. "
+                    "لطفاً به پشتیبانی اطلاع دهید.",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+            return
+        cfg = available[0]
+        try:
+            purchase_id = assign_config_to_user(
+                cfg["id"], referrer_id, int(pkg_id), 0, "referral_gift", is_test=0
+            )
+            bot.send_message(
+                referrer_id,
+                "🎁 <b>هدیه زیرمجموعه‌گیری!</b>\n\n"
+                "یک کانفیگ رایگان به شما تعلق گرفت! 🎉\n"
+                "جزئیات سرویس در ادامه ارسال می‌شود.",
+                parse_mode="HTML"
+            )
+            deliver_purchase_message(referrer_id, purchase_id)
+        except Exception:
+            pass
+
+
+def check_and_give_referral_start_reward(referrer_id):
+    """Check if referrer qualifies for start reward and give it."""
+    if setting_get("referral_start_reward_enabled", "0") != "1":
+        return
+    required_count = int(setting_get("referral_start_reward_count", "1"))
+    unrewarded = get_unrewarded_start_referrals(referrer_id)
+    if len(unrewarded) >= required_count:
+        # Give reward and mark referees as rewarded
+        batch = [r["referee_id"] for r in unrewarded[:required_count]]
+        mark_start_reward_given(referrer_id, batch)
+        _give_referral_reward(referrer_id, "referral_start_reward")
+
+
+def check_and_give_referral_purchase_reward(buyer_user_id):
+    """Called after a purchase. Check if buyer was referred and give purchase reward to referrer."""
+    if setting_get("referral_purchase_reward_enabled", "0") != "1":
+        return
+    ref = get_referral_by_referee(buyer_user_id)
+    if not ref:
+        return
+    referrer_id = ref["referrer_id"]
+    required_count = int(setting_get("referral_purchase_reward_count", "1"))
+    unrewarded = get_unrewarded_purchase_referees(referrer_id)
+    if len(unrewarded) >= required_count:
+        batch = [r["referee_id"] for r in unrewarded[:required_count]]
+        mark_purchase_reward_given(referrer_id, batch)
+        _give_referral_reward(referrer_id, "referral_purchase_reward")

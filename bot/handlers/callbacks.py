@@ -50,7 +50,7 @@ from ..gateways.tronpays_rial import (
 )
 from ..ui.helpers import send_or_edit, check_channel_membership, channel_lock_message
 from ..ui.keyboards import kb_main, kb_admin_panel
-from ..ui.menus import show_main_menu, show_profile, show_support, show_my_configs
+from ..ui.menus import show_main_menu, show_profile, show_support, show_my_configs, show_referral_menu
 from ..ui.notifications import (
     deliver_purchase_message, admin_purchase_notify, admin_renewal_notify,
     notify_pending_order_to_admins, _complete_pending_order, auto_fulfill_pending_orders,
@@ -562,6 +562,11 @@ def _dispatch_callback(call, uid, data):
     if data == "support":
         bot.answer_callback_query(call.id)
         show_support(call)
+        return
+
+    if data == "referral:menu":
+        bot.answer_callback_query(call.id)
+        show_referral_menu(call, uid)
         return
 
     # ── Agency request ────────────────────────────────────────────────────────
@@ -4078,10 +4083,13 @@ def _dispatch_callback(call, uid, data):
     def _build_ops_kb():
         bot_status      = setting_get("bot_status", "on")
         renewal_enabled = setting_get("manual_renewal_enabled", "1")
+        referral_enabled = setting_get("referral_enabled", "1")
         status_map = {"on": "🟢 روشن", "off": "🔴 خاموش", "update": "🔄 بروزرسانی"}
         renewal_map = {"1": "✅ فعال", "0": "❌ غیرفعال"}
+        referral_map = {"1": "✅ فعال", "0": "❌ غیرفعال"}
         status_label  = status_map.get(bot_status, "🟢 روشن")
         renewal_label = renewal_map.get(renewal_enabled, "✅ فعال")
+        referral_label = referral_map.get(referral_enabled, "✅ فعال")
         ops_kb = types.InlineKeyboardMarkup(row_width=2)
         ops_kb.row(
             types.InlineKeyboardButton(status_label,  callback_data="adm:ops:status"),
@@ -4091,18 +4099,26 @@ def _dispatch_callback(call, uid, data):
             types.InlineKeyboardButton(renewal_label, callback_data="adm:ops:renewal"),
             types.InlineKeyboardButton("♻️ تمدید کانفیگ‌های ثبت دستی", callback_data="adm:ops:noop"),
         )
+        ops_kb.row(
+            types.InlineKeyboardButton(referral_label, callback_data="adm:ops:referral_toggle"),
+            types.InlineKeyboardButton("🎁 زیرمجموعه‌گیری", callback_data="adm:ops:noop"),
+        )
+        ops_kb.add(types.InlineKeyboardButton("⚙️ تنظیمات زیرمجموعه‌گیری", callback_data="adm:ref:settings"))
         ops_kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:settings"))
         return ops_kb
 
     def _ops_menu_text():
         bot_status      = setting_get("bot_status", "on")
         renewal_enabled = setting_get("manual_renewal_enabled", "1")
+        referral_enabled = setting_get("referral_enabled", "1")
         status_fa  = {"on": "🟢 روشن", "off": "🔴 خاموش", "update": "🔄 بروزرسانی"}.get(bot_status, "🟢 روشن")
         renewal_fa = "✅ فعال" if renewal_enabled == "1" else "❌ غیرفعال"
+        referral_fa = "✅ فعال" if referral_enabled == "1" else "❌ غیرفعال"
         return (
             "🤖 <b>مدیریت عملیات ربات</b>\n\n"
             f"🔹 <b>وضعیت ربات:</b> {status_fa}\n"
-            f"🔹 <b>تمدید کانفیگ‌های ثبت دستی:</b> {renewal_fa}\n\n"
+            f"🔹 <b>تمدید کانفیگ‌های ثبت دستی:</b> {renewal_fa}\n"
+            f"🔹 <b>زیرمجموعه‌گیری:</b> {referral_fa}\n\n"
             "برای تغییر هر مورد، دکمه وضعیت فعلی آن را لمس کنید."
         )
 
@@ -4141,6 +4157,277 @@ def _dispatch_callback(call, uid, data):
         label = "فعال" if new_val == "1" else "غیرفعال"
         bot.answer_callback_query(call.id, f"تمدید دستی: {label}")
         send_or_edit(call, _ops_menu_text(), _build_ops_kb())
+        return
+
+    if data == "adm:ops:referral_toggle":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        cur = setting_get("referral_enabled", "1")
+        new_val = "0" if cur == "1" else "1"
+        setting_set("referral_enabled", new_val)
+        label = "فعال" if new_val == "1" else "غیرفعال"
+        bot.answer_callback_query(call.id, f"زیرمجموعه‌گیری: {label}")
+        send_or_edit(call, _ops_menu_text(), _build_ops_kb())
+        return
+
+    # ── Referral Settings ─────────────────────────────────────────────────────
+    def _ref_settings_kb():
+        sr_enabled = setting_get("referral_start_reward_enabled", "0")
+        pr_enabled = setting_get("referral_purchase_reward_enabled", "0")
+        sr_label = "✅ فعال" if sr_enabled == "1" else "❌ غیرفعال"
+        pr_label = "✅ فعال" if pr_enabled == "1" else "❌ غیرفعال"
+        sr_type = setting_get("referral_start_reward_type", "wallet")
+        pr_type = setting_get("referral_purchase_reward_type", "wallet")
+        sr_count = setting_get("referral_start_reward_count", "1")
+        pr_count = setting_get("referral_purchase_reward_count", "1")
+        sr_type_label = "💰 کیف پول" if sr_type == "wallet" else "📦 کانفیگ"
+        pr_type_label = "💰 کیف پول" if pr_type == "wallet" else "📦 کانفیگ"
+
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("📸 تنظیم بنر اشتراک‌گذاری", callback_data="adm:ref:banner"))
+        # Start reward section
+        kb.add(types.InlineKeyboardButton("── 🎁 هدیه استارت ──", callback_data="adm:ops:noop"))
+        kb.row(
+            types.InlineKeyboardButton(sr_label, callback_data="adm:ref:sr:toggle"),
+            types.InlineKeyboardButton("وضعیت هدیه استارت", callback_data="adm:ops:noop"),
+        )
+        kb.add(types.InlineKeyboardButton(f"📊 تعداد: {sr_count} زیرمجموعه", callback_data="adm:ref:sr:count"))
+        kb.add(types.InlineKeyboardButton(f"🎯 نوع هدیه: {sr_type_label}", callback_data="adm:ref:sr:type"))
+        if sr_type == "wallet":
+            sr_amount = setting_get("referral_start_reward_amount", "0")
+            kb.add(types.InlineKeyboardButton(f"💵 مبلغ: {fmt_price(int(sr_amount))} تومان", callback_data="adm:ref:sr:amount"))
+        else:
+            sr_pkg = setting_get("referral_start_reward_package", "")
+            pkg_name = "انتخاب نشده"
+            if sr_pkg:
+                _p = get_package(int(sr_pkg)) if sr_pkg.isdigit() else None
+                if _p:
+                    pkg_name = _p["name"]
+            kb.add(types.InlineKeyboardButton(f"📦 پکیج: {pkg_name}", callback_data="adm:ref:sr:pkg"))
+
+        # Purchase reward section
+        kb.add(types.InlineKeyboardButton("── 💸 هدیه خرید ──", callback_data="adm:ops:noop"))
+        kb.row(
+            types.InlineKeyboardButton(pr_label, callback_data="adm:ref:pr:toggle"),
+            types.InlineKeyboardButton("وضعیت هدیه خرید", callback_data="adm:ops:noop"),
+        )
+        kb.add(types.InlineKeyboardButton(f"📊 تعداد: {pr_count} خرید", callback_data="adm:ref:pr:count"))
+        kb.add(types.InlineKeyboardButton(f"🎯 نوع هدیه: {pr_type_label}", callback_data="adm:ref:pr:type"))
+        if pr_type == "wallet":
+            pr_amount = setting_get("referral_purchase_reward_amount", "0")
+            kb.add(types.InlineKeyboardButton(f"💵 مبلغ: {fmt_price(int(pr_amount))} تومان", callback_data="adm:ref:pr:amount"))
+        else:
+            pr_pkg = setting_get("referral_purchase_reward_package", "")
+            pkg_name = "انتخاب نشده"
+            if pr_pkg:
+                _p = get_package(int(pr_pkg)) if pr_pkg.isdigit() else None
+                if _p:
+                    pkg_name = _p["name"]
+            kb.add(types.InlineKeyboardButton(f"📦 پکیج: {pkg_name}", callback_data="adm:ref:pr:pkg"))
+
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="adm:ops"))
+        return kb
+
+    def _ref_settings_text():
+        sr_enabled = "✅ فعال" if setting_get("referral_start_reward_enabled", "0") == "1" else "❌ غیرفعال"
+        pr_enabled = "✅ فعال" if setting_get("referral_purchase_reward_enabled", "0") == "1" else "❌ غیرفعال"
+        return (
+            "⚙️ <b>تنظیمات زیرمجموعه‌گیری</b>\n\n"
+            f"🎁 هدیه استارت: {sr_enabled}\n"
+            f"💸 هدیه خرید زیرمجموعه: {pr_enabled}\n\n"
+            "هر بخش را با دکمه‌های زیر تنظیم کنید."
+        )
+
+    if data == "adm:ref:settings":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, _ref_settings_text(), _ref_settings_kb())
+        return
+
+    if data == "adm:ref:banner":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        state_set(uid, "admin_ref_banner")
+        bot.answer_callback_query(call.id)
+        cur_text = setting_get("referral_banner_text", "")
+        cur_photo = setting_get("referral_banner_photo", "")
+        status = ""
+        if cur_text:
+            status += f"\n\n📝 متن فعلی:\n{esc(cur_text[:200])}"
+        if cur_photo:
+            status += "\n🖼 عکس: ✅ ست شده"
+        kb = types.InlineKeyboardMarkup()
+        if cur_text or cur_photo:
+            kb.add(types.InlineKeyboardButton("🗑 حذف بنر سفارشی", callback_data="adm:ref:banner:del"))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="adm:ref:settings"))
+        send_or_edit(call,
+            "📸 <b>تنظیم بنر اشتراک‌گذاری</b>\n\n"
+            "متن یا عکس+کپشن مورد نظر برای اشتراک‌گذاری لینک دعوت ارسال کنید.\n"
+            "این متن/عکس هنگام اشتراک‌گذاری لینک دعوت به کاربران نمایش داده می‌شود.\n\n"
+            "💡 لینک دعوت کاربر به صورت خودکار به انتهای متن اضافه می‌شود."
+            f"{status}", kb)
+        return
+
+    if data == "adm:ref:banner:del":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        setting_set("referral_banner_text", "")
+        setting_set("referral_banner_photo", "")
+        bot.answer_callback_query(call.id, "بنر سفارشی حذف شد.")
+        send_or_edit(call, _ref_settings_text(), _ref_settings_kb())
+        return
+
+    # Start reward toggles
+    if data == "adm:ref:sr:toggle":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        cur = setting_get("referral_start_reward_enabled", "0")
+        setting_set("referral_start_reward_enabled", "0" if cur == "1" else "1")
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, _ref_settings_text(), _ref_settings_kb())
+        return
+
+    if data == "adm:ref:sr:count":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        state_set(uid, "admin_ref_sr_count")
+        bot.answer_callback_query(call.id)
+        send_or_edit(call,
+            "🔢 <b>تعداد زیرمجموعه برای هدیه استارت</b>\n\n"
+            "ادمین عزیز، وارد کنید بعد از چند زیرمجموعه جدید، هدیه به معرف داده شود.\n\n"
+            f"مقدار فعلی: <b>{setting_get('referral_start_reward_count', '1')}</b>",
+            back_button("adm:ref:settings"))
+        return
+
+    if data == "adm:ref:sr:type":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        cur = setting_get("referral_start_reward_type", "wallet")
+        new_val = "config" if cur == "wallet" else "wallet"
+        setting_set("referral_start_reward_type", new_val)
+        bot.answer_callback_query(call.id, f"نوع هدیه: {'کیف پول' if new_val == 'wallet' else 'کانفیگ'}")
+        send_or_edit(call, _ref_settings_text(), _ref_settings_kb())
+        return
+
+    if data == "adm:ref:sr:amount":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        state_set(uid, "admin_ref_sr_amount")
+        bot.answer_callback_query(call.id)
+        send_or_edit(call,
+            "💵 <b>مبلغ شارژ کیف پول (هدیه استارت)</b>\n\n"
+            "مبلغ به تومان وارد کنید:\n\n"
+            f"مقدار فعلی: <b>{fmt_price(int(setting_get('referral_start_reward_amount', '0')))}</b> تومان",
+            back_button("adm:ref:settings"))
+        return
+
+    if data == "adm:ref:sr:pkg":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        # Show package list for selection
+        all_types = get_all_types()
+        kb = types.InlineKeyboardMarkup()
+        for t in all_types:
+            pkgs = get_packages(t["id"])
+            for p in pkgs:
+                kb.add(types.InlineKeyboardButton(
+                    f"{t['name']} - {p['name']}",
+                    callback_data=f"adm:ref:sr:pkgsel:{p['id']}"
+                ))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="adm:ref:settings"))
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, "📦 <b>انتخاب پکیج هدیه استارت</b>\n\nپکیجی که می‌خواهید به عنوان هدیه داده شود انتخاب کنید:", kb)
+        return
+
+    if data.startswith("adm:ref:sr:pkgsel:"):
+        pkg_id = data.split(":")[4]
+        setting_set("referral_start_reward_package", pkg_id)
+        bot.answer_callback_query(call.id, "پکیج هدیه استارت تنظیم شد.")
+        send_or_edit(call, _ref_settings_text(), _ref_settings_kb())
+        return
+
+    # Purchase reward toggles
+    if data == "adm:ref:pr:toggle":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        cur = setting_get("referral_purchase_reward_enabled", "0")
+        setting_set("referral_purchase_reward_enabled", "0" if cur == "1" else "1")
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, _ref_settings_text(), _ref_settings_kb())
+        return
+
+    if data == "adm:ref:pr:count":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        state_set(uid, "admin_ref_pr_count")
+        bot.answer_callback_query(call.id)
+        send_or_edit(call,
+            "🔢 <b>تعداد خرید زیرمجموعه برای هدیه</b>\n\n"
+            "وارد کنید بعد از چند خرید اول زیرمجموعه‌ها، هدیه به معرف داده شود.\n"
+            "⚠️ فقط اولین خرید هر زیرمجموعه در نظر گرفته می‌شود.\n\n"
+            f"مقدار فعلی: <b>{setting_get('referral_purchase_reward_count', '1')}</b>",
+            back_button("adm:ref:settings"))
+        return
+
+    if data == "adm:ref:pr:type":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        cur = setting_get("referral_purchase_reward_type", "wallet")
+        new_val = "config" if cur == "wallet" else "wallet"
+        setting_set("referral_purchase_reward_type", new_val)
+        bot.answer_callback_query(call.id, f"نوع هدیه: {'کیف پول' if new_val == 'wallet' else 'کانفیگ'}")
+        send_or_edit(call, _ref_settings_text(), _ref_settings_kb())
+        return
+
+    if data == "adm:ref:pr:amount":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        state_set(uid, "admin_ref_pr_amount")
+        bot.answer_callback_query(call.id)
+        send_or_edit(call,
+            "💵 <b>مبلغ شارژ کیف پول (هدیه خرید)</b>\n\n"
+            "مبلغ به تومان وارد کنید:\n\n"
+            f"مقدار فعلی: <b>{fmt_price(int(setting_get('referral_purchase_reward_amount', '0')))}</b> تومان",
+            back_button("adm:ref:settings"))
+        return
+
+    if data == "adm:ref:pr:pkg":
+        if not admin_has_perm(uid, "settings"):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        all_types = get_all_types()
+        kb = types.InlineKeyboardMarkup()
+        for t in all_types:
+            pkgs = get_packages(t["id"])
+            for p in pkgs:
+                kb.add(types.InlineKeyboardButton(
+                    f"{t['name']} - {p['name']}",
+                    callback_data=f"adm:ref:pr:pkgsel:{p['id']}"
+                ))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="adm:ref:settings"))
+        bot.answer_callback_query(call.id)
+        send_or_edit(call, "📦 <b>انتخاب پکیج هدیه خرید</b>\n\nپکیجی که می‌خواهید به عنوان هدیه داده شود انتخاب کنید:", kb)
+        return
+
+    if data.startswith("adm:ref:pr:pkgsel:"):
+        pkg_id = data.split(":")[4]
+        setting_set("referral_purchase_reward_package", pkg_id)
+        bot.answer_callback_query(call.id, "پکیج هدیه خرید تنظیم شد.")
+        send_or_edit(call, _ref_settings_text(), _ref_settings_kb())
         return
 
     # ── Gateway settings ─────────────────────────────────────────────────────

@@ -177,6 +177,14 @@ def init_db():
                 user_id    INTEGER NOT NULL,
                 message_id INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS referrals (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                referrer_id INTEGER NOT NULL,
+                referee_id  INTEGER NOT NULL UNIQUE,
+                created_at  TEXT    NOT NULL,
+                start_reward_given   INTEGER NOT NULL DEFAULT 0,
+                purchase_reward_given INTEGER NOT NULL DEFAULT 0
+            );
         """)
 
         defaults = {
@@ -244,6 +252,19 @@ def init_db():
             "group_topic_error_log":        "",
             "agency_request_enabled":       "1",
             "agency_default_discount_pct":  "20",
+            "referral_enabled":             "1",
+            "referral_banner_text":         "",
+            "referral_banner_photo":        "",
+            "referral_start_reward_enabled":  "0",
+            "referral_start_reward_count":    "1",
+            "referral_start_reward_type":     "wallet",
+            "referral_start_reward_amount":   "0",
+            "referral_start_reward_package":  "",
+            "referral_purchase_reward_enabled": "0",
+            "referral_purchase_reward_count":   "1",
+            "referral_purchase_reward_type":    "wallet",
+            "referral_purchase_reward_amount":  "0",
+            "referral_purchase_reward_package": "",
         }
         for coin, _ in CRYPTO_COINS:
             defaults[f"crypto_{coin}"] = ""
@@ -265,6 +286,7 @@ def init_db():
             "ALTER TABLE config_types ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1",
             "CREATE TABLE IF NOT EXISTS pinned_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, created_at TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS pinned_message_sends (id INTEGER PRIMARY KEY AUTOINCREMENT, pin_id INTEGER NOT NULL, user_id INTEGER NOT NULL, message_id INTEGER NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS referrals (id INTEGER PRIMARY KEY AUTOINCREMENT, referrer_id INTEGER NOT NULL, referee_id INTEGER NOT NULL UNIQUE, created_at TEXT NOT NULL, start_reward_given INTEGER NOT NULL DEFAULT 0, purchase_reward_given INTEGER NOT NULL DEFAULT 0)",
         ]
         for sql in migrations:
             try:
@@ -1206,3 +1228,107 @@ def get_pinned_sends(pin_id):
 def delete_pinned_sends(pin_id):
     with get_conn() as conn:
         conn.execute("DELETE FROM pinned_message_sends WHERE pin_id=?", (pin_id,))
+
+
+# ── Referrals ──────────────────────────────────────────────────────────────────
+def add_referral(referrer_id, referee_id):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO referrals(referrer_id, referee_id, created_at) VALUES(?,?,?)",
+            (referrer_id, referee_id, now_str())
+        )
+
+
+def get_referral_by_referee(referee_id):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM referrals WHERE referee_id=?", (referee_id,)
+        ).fetchone()
+
+
+def get_referral_stats(referrer_id):
+    """Return referral stats for a user."""
+    with get_conn() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) AS n FROM referrals WHERE referrer_id=?", (referrer_id,)
+        ).fetchone()["n"]
+        # Count purchases by referees (only first purchase per referee)
+        purchase_count = conn.execute(
+            "SELECT COUNT(DISTINCT r.referee_id) AS n "
+            "FROM referrals r "
+            "JOIN purchases p ON p.user_id = r.referee_id AND p.is_test = 0 "
+            "WHERE r.referrer_id=?",
+            (referrer_id,)
+        ).fetchone()["n"]
+        total_purchase_amount = conn.execute(
+            "SELECT COALESCE(SUM(sub.first_amount), 0) AS total FROM ("
+            "  SELECT MIN(p.id) AS first_id, p.amount AS first_amount "
+            "  FROM referrals r "
+            "  JOIN purchases p ON p.user_id = r.referee_id AND p.is_test = 0 "
+            "  WHERE r.referrer_id=? "
+            "  GROUP BY r.referee_id"
+            ") sub",
+            (referrer_id,)
+        ).fetchone()["total"]
+        return {
+            "total_referrals": total,
+            "purchase_count": purchase_count,
+            "total_purchase_amount": total_purchase_amount,
+        }
+
+
+def count_referrals(referrer_id):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) AS n FROM referrals WHERE referrer_id=?", (referrer_id,)
+        ).fetchone()["n"]
+
+
+def count_referee_first_purchases(referrer_id):
+    """Count how many of referrer's referees have made at least one non-test purchase."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT COUNT(DISTINCT r.referee_id) AS n "
+            "FROM referrals r "
+            "JOIN purchases p ON p.user_id = r.referee_id AND p.is_test = 0 "
+            "WHERE r.referrer_id=? AND r.purchase_reward_given = 0",
+            (referrer_id,)
+        ).fetchone()["n"]
+
+
+def mark_start_reward_given(referrer_id, referee_ids):
+    with get_conn() as conn:
+        for rid in referee_ids:
+            conn.execute(
+                "UPDATE referrals SET start_reward_given=1 WHERE referrer_id=? AND referee_id=?",
+                (referrer_id, rid)
+            )
+
+
+def mark_purchase_reward_given(referrer_id, referee_ids):
+    with get_conn() as conn:
+        for rid in referee_ids:
+            conn.execute(
+                "UPDATE referrals SET purchase_reward_given=1 WHERE referrer_id=? AND referee_id=?",
+                (referrer_id, rid)
+            )
+
+
+def get_unrewarded_start_referrals(referrer_id):
+    """Get referees who haven't been rewarded for starting yet."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM referrals WHERE referrer_id=? AND start_reward_given=0",
+            (referrer_id,)
+        ).fetchall()
+
+
+def get_unrewarded_purchase_referees(referrer_id):
+    """Get referee IDs who made first purchase but referrer hasn't been rewarded."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT DISTINCT r.referee_id FROM referrals r "
+            "JOIN purchases p ON p.user_id = r.referee_id AND p.is_test = 0 "
+            "WHERE r.referrer_id=? AND r.purchase_reward_given=0",
+            (referrer_id,)
+        ).fetchall()
