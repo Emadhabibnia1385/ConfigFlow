@@ -18,7 +18,7 @@ from .db import (
 )
 from .helpers import esc, fmt_price, display_username, back_button
 import time
-from .gateways.base import is_gateway_available, is_card_info_complete, get_gateway_range_text
+from .gateways.base import is_gateway_available, is_card_info_complete, get_gateway_range_text, is_gateway_in_range, build_gateway_range_guide
 from .gateways.crypto import fetch_crypto_prices
 from .bot_instance import bot
 from .ui.helpers import send_or_edit
@@ -79,37 +79,40 @@ def show_payment_method_selection(target, uid, context_data):
     """
     amount = context_data["amount"]
 
+    _gw_labels = []
     kb = types.InlineKeyboardMarkup()
     from .db import setting_get as _sg
     if is_gateway_available("card", uid, amount) and is_card_info_complete():
         _lbl = _sg("gw_card_display_name", "").strip() or "💳 کارت به کارت"
         kb.add(types.InlineKeyboardButton(_lbl, callback_data="pm:card"))
-        kb.add(types.InlineKeyboardButton(f"   📊 {get_gateway_range_text('card')}", callback_data="noop"))
+        _gw_labels.append(("card", _lbl))
     if is_gateway_available("crypto", uid, amount):
         _lbl = _sg("gw_crypto_display_name", "").strip() or "💎 ارز دیجیتال"
         kb.add(types.InlineKeyboardButton(_lbl, callback_data="pm:crypto"))
-        kb.add(types.InlineKeyboardButton(f"   📊 {get_gateway_range_text('crypto')}", callback_data="noop"))
+        _gw_labels.append(("crypto", _lbl))
     if is_gateway_available("tetrapay", uid, amount):
         _lbl = _sg("gw_tetrapay_display_name", "").strip() or "💳 درگاه کارت به کارت (TetraPay)"
         kb.add(types.InlineKeyboardButton(_lbl, callback_data="pm:tetrapay"))
-        kb.add(types.InlineKeyboardButton(f"   📊 {get_gateway_range_text('tetrapay')}", callback_data="noop"))
+        _gw_labels.append(("tetrapay", _lbl))
     if is_gateway_available("swapwallet_crypto", uid, amount):
         _lbl = _sg("gw_swapwallet_crypto_display_name", "").strip() or "💳 درگاه کارت به کارت و ارز دیجیتال (SwapWallet)"
         kb.add(types.InlineKeyboardButton(_lbl, callback_data="pm:swapwallet_crypto"))
-        kb.add(types.InlineKeyboardButton(f"   📊 {get_gateway_range_text('swapwallet_crypto')}", callback_data="noop"))
+        _gw_labels.append(("swapwallet_crypto", _lbl))
     if is_gateway_available("tronpays_rial", uid, amount):
         _lbl = _sg("gw_tronpays_rial_display_name", "").strip() or "💳 درگاه کارت به کارت (TronsPay)"
         kb.add(types.InlineKeyboardButton(_lbl, callback_data="pm:tronpays_rial"))
-        kb.add(types.InlineKeyboardButton(f"   📊 {get_gateway_range_text('tronpays_rial')}", callback_data="noop"))
+        _gw_labels.append(("tronpays_rial", _lbl))
     kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
 
     user       = get_user(uid)
     agent_note = "\n\n🤝 <i>این قیمت‌ها مخصوص همکاری شماست</i>" if user and user["is_agent"] else ""
+    _range_guide = build_gateway_range_guide(_gw_labels)
     send_or_edit(
         target,
         f"💳 <b>انتخاب روش پرداخت</b>\n\n"
         f"💰 مبلغ: <b>{fmt_price(amount)}</b> تومان{agent_note}\n\n"
-        "روش پرداخت را انتخاب کنید:",
+        + (_range_guide + "\n\n" if _range_guide else "")
+        + "روش پرداخت را انتخاب کنید:",
         kb
     )
 

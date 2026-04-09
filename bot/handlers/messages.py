@@ -35,7 +35,7 @@ from ..db import (
     save_pinned_send, get_pinned_sends,
     save_agency_request_message,
 )
-from ..gateways.base import is_gateway_available, is_card_info_complete, get_global_amount_range, get_gateway_range_text
+from ..gateways.base import is_gateway_available, is_card_info_complete, get_global_amount_range, get_gateway_range_text, is_gateway_in_range, build_gateway_range_guide
 from ..gateways.tetrapay import create_tetrapay_order, verify_tetrapay_order
 from ..ui.helpers import send_or_edit, check_channel_membership, channel_lock_message
 from ..ui.keyboards import kb_main, kb_admin_panel
@@ -252,43 +252,36 @@ def universal_handler(message):
                     reply_markup=back_button("main"))
                 return
             state_set(uid, "wallet_charge_method", amount=amount)
+            _gw_labels = []
             kb = types.InlineKeyboardMarkup()
             if is_gateway_available("card", uid, amount) and is_card_info_complete():
-                _rng = get_gateway_range_text("card")
-                kb.add(types.InlineKeyboardButton(
-                    setting_get("gw_card_display_name", "").strip() or "💳 کارت به کارت",
-                    callback_data="wallet:charge:card"))
-                kb.add(types.InlineKeyboardButton(f"   📊 {_rng}", callback_data="noop"))
+                _lbl = setting_get("gw_card_display_name", "").strip() or "💳 کارت به کارت"
+                kb.add(types.InlineKeyboardButton(_lbl, callback_data="wallet:charge:card"))
+                _gw_labels.append(("card", _lbl))
             if is_gateway_available("crypto", uid, amount):
-                _rng = get_gateway_range_text("crypto")
-                kb.add(types.InlineKeyboardButton(
-                    setting_get("gw_crypto_display_name", "").strip() or "💎 ارز دیجیتال",
-                    callback_data="wallet:charge:crypto"))
-                kb.add(types.InlineKeyboardButton(f"   📊 {_rng}", callback_data="noop"))
+                _lbl = setting_get("gw_crypto_display_name", "").strip() or "💎 ارز دیجیتال"
+                kb.add(types.InlineKeyboardButton(_lbl, callback_data="wallet:charge:crypto"))
+                _gw_labels.append(("crypto", _lbl))
             if is_gateway_available("tetrapay", uid, amount):
-                _rng = get_gateway_range_text("tetrapay")
-                kb.add(types.InlineKeyboardButton(
-                    setting_get("gw_tetrapay_display_name", "").strip() or "💳 درگاه کارت به کارت (TetraPay)",
-                    callback_data="wallet:charge:tetrapay"))
-                kb.add(types.InlineKeyboardButton(f"   📊 {_rng}", callback_data="noop"))
+                _lbl = setting_get("gw_tetrapay_display_name", "").strip() or "💳 درگاه کارت به کارت (TetraPay)"
+                kb.add(types.InlineKeyboardButton(_lbl, callback_data="wallet:charge:tetrapay"))
+                _gw_labels.append(("tetrapay", _lbl))
             if is_gateway_available("swapwallet_crypto", uid, amount):
-                _rng = get_gateway_range_text("swapwallet_crypto")
-                kb.add(types.InlineKeyboardButton(
-                    setting_get("gw_swapwallet_crypto_display_name", "").strip() or "💳 درگاه کارت به کارت و ارز دیجیتال (SwapWallet)",
-                    callback_data="wallet:charge:swapwallet_crypto"))
-                kb.add(types.InlineKeyboardButton(f"   📊 {_rng}", callback_data="noop"))
+                _lbl = setting_get("gw_swapwallet_crypto_display_name", "").strip() or "💳 درگاه کارت به کارت و ارز دیجیتال (SwapWallet)"
+                kb.add(types.InlineKeyboardButton(_lbl, callback_data="wallet:charge:swapwallet_crypto"))
+                _gw_labels.append(("swapwallet_crypto", _lbl))
             if is_gateway_available("tronpays_rial", uid, amount):
-                _rng = get_gateway_range_text("tronpays_rial")
-                kb.add(types.InlineKeyboardButton(
-                    setting_get("gw_tronpays_rial_display_name", "").strip() or "💳 درگاه کارت به کارت (TronsPay)",
-                    callback_data="wallet:charge:tronpays_rial"))
-                kb.add(types.InlineKeyboardButton(f"   📊 {_rng}", callback_data="noop"))
-            kb.add(types.InlineKeyboardButton("🔙 بازگشت",            callback_data="nav:main"))
-            bot.send_message(
-                uid,
-                f"💰 مبلغ <b>{fmt_price(amount)}</b> تومان ثبت شد.\nروش پرداخت را انتخاب کنید:",
-                reply_markup=kb
+                _lbl = setting_get("gw_tronpays_rial_display_name", "").strip() or "💳 درگاه کارت به کارت (TronsPay)"
+                kb.add(types.InlineKeyboardButton(_lbl, callback_data="wallet:charge:tronpays_rial"))
+                _gw_labels.append(("tronpays_rial", _lbl))
+            kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
+            _range_guide = build_gateway_range_guide(_gw_labels)
+            _charge_text = (
+                f"💰 مبلغ <b>{fmt_price(amount)}</b> تومان ثبت شد.\n\n"
+                + (_range_guide + "\n\n" if _range_guide else "")
+                + "روش پرداخت را انتخاب کنید:"
             )
+            bot.send_message(uid, _charge_text, reply_markup=kb, parse_mode="HTML")
             return
 
         # ── Wallet receipt ─────────────────────────────────────────────────────

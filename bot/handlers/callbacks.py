@@ -40,7 +40,7 @@ from ..db import (
     save_payment_admin_message, get_payment_admin_messages, delete_payment_admin_messages,
     save_agency_request_message, get_agency_request_messages, delete_agency_request_messages,
 )
-from ..gateways.base import is_gateway_available, is_card_info_complete, get_gateway_range_text
+from ..gateways.base import is_gateway_available, is_card_info_complete, get_gateway_range_text, is_gateway_in_range, build_gateway_range_guide
 from ..gateways.crypto import fetch_crypto_prices
 from ..gateways.tetrapay import create_tetrapay_order, verify_tetrapay_order
 from ..gateways.swapwallet_crypto import (
@@ -812,6 +812,31 @@ def _dispatch_callback(call, uid, data):
         state_set(uid, "renew_select_method",
                   package_id=package_id, amount=price,
                   kind="renewal", purchase_id=purchase_id)
+        _gw_labels = []
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("💰 پرداخت از موجودی", callback_data=f"rpay:wallet:{purchase_id}:{package_id}"))
+        if is_gateway_available("card", uid, price) and is_card_info_complete():
+            _lbl = setting_get("gw_card_display_name", "").strip() or "💳 کارت به کارت"
+            kb.add(types.InlineKeyboardButton(_lbl, callback_data=f"rpay:card:{purchase_id}:{package_id}"))
+            _gw_labels.append(("card", _lbl))
+        if is_gateway_available("crypto", uid, price):
+            _lbl = setting_get("gw_crypto_display_name", "").strip() or "💎 ارز دیجیتال"
+            kb.add(types.InlineKeyboardButton(_lbl, callback_data=f"rpay:crypto:{purchase_id}:{package_id}"))
+            _gw_labels.append(("crypto", _lbl))
+        if is_gateway_available("tetrapay", uid, price):
+            _lbl = setting_get("gw_tetrapay_display_name", "").strip() or "💳 درگاه کارت به کارت (TetraPay)"
+            kb.add(types.InlineKeyboardButton(_lbl, callback_data=f"rpay:tetrapay:{purchase_id}:{package_id}"))
+            _gw_labels.append(("tetrapay", _lbl))
+        if is_gateway_available("swapwallet_crypto", uid, price):
+            _lbl = setting_get("gw_swapwallet_crypto_display_name", "").strip() or "💳 درگاه کارت به کارت و ارز دیجیتال (SwapWallet)"
+            kb.add(types.InlineKeyboardButton(_lbl, callback_data=f"rpay:swapwallet_crypto:{purchase_id}:{package_id}"))
+            _gw_labels.append(("swapwallet_crypto", _lbl))
+        if is_gateway_available("tronpays_rial", uid, price):
+            _lbl = setting_get("gw_tronpays_rial_display_name", "").strip() or "💳 درگاه کارت به کارت (TronsPay)"
+            kb.add(types.InlineKeyboardButton(_lbl, callback_data=f"rpay:tronpays_rial:{purchase_id}:{package_id}"))
+            _gw_labels.append(("tronpays_rial", _lbl))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"renew:{purchase_id}"))
+        _range_guide = build_gateway_range_guide(_gw_labels)
         text = (
             "♻️ <b>تمدید سرویس</b>\n\n"
             f"🔮 سرویس فعلی: {esc(urllib.parse.unquote(item['service_name'] or ''))}\n"
@@ -819,31 +844,9 @@ def _dispatch_callback(call, uid, data):
             f"🔋 حجم: {fmt_vol(package_row['volume_gb'])}\n"
             f"⏰ مدت: {fmt_dur(package_row['duration_days'])}\n"
             f"💰 قیمت: {fmt_price(price)} تومان\n\n"
-            "روش پرداخت را انتخاب کنید:"
+            + (_range_guide + "\n\n" if _range_guide else "")
+            + "روش پرداخت را انتخاب کنید:"
         )
-        kb = types.InlineKeyboardMarkup()
-        kb.add(types.InlineKeyboardButton("💰 پرداخت از موجودی", callback_data=f"rpay:wallet:{purchase_id}:{package_id}"))
-        if is_gateway_available("card", uid, price) and is_card_info_complete():
-            _lbl = setting_get("gw_card_display_name", "").strip() or "💳 کارت به کارت"
-            kb.add(types.InlineKeyboardButton(_lbl, callback_data=f"rpay:card:{purchase_id}:{package_id}"))
-            kb.add(types.InlineKeyboardButton(f"   📊 {get_gateway_range_text('card')}", callback_data="noop"))
-        if is_gateway_available("crypto", uid, price):
-            _lbl = setting_get("gw_crypto_display_name", "").strip() or "💎 ارز دیجیتال"
-            kb.add(types.InlineKeyboardButton(_lbl, callback_data=f"rpay:crypto:{purchase_id}:{package_id}"))
-            kb.add(types.InlineKeyboardButton(f"   📊 {get_gateway_range_text('crypto')}", callback_data="noop"))
-        if is_gateway_available("tetrapay", uid, price):
-            _lbl = setting_get("gw_tetrapay_display_name", "").strip() or "💳 درگاه کارت به کارت (TetraPay)"
-            kb.add(types.InlineKeyboardButton(_lbl, callback_data=f"rpay:tetrapay:{purchase_id}:{package_id}"))
-            kb.add(types.InlineKeyboardButton(f"   📊 {get_gateway_range_text('tetrapay')}", callback_data="noop"))
-        if is_gateway_available("swapwallet_crypto", uid, price):
-            _lbl = setting_get("gw_swapwallet_crypto_display_name", "").strip() or "💳 درگاه کارت به کارت و ارز دیجیتال (SwapWallet)"
-            kb.add(types.InlineKeyboardButton(_lbl, callback_data=f"rpay:swapwallet_crypto:{purchase_id}:{package_id}"))
-            kb.add(types.InlineKeyboardButton(f"   📊 {get_gateway_range_text('swapwallet_crypto')}", callback_data="noop"))
-        if is_gateway_available("tronpays_rial", uid, price):
-            _lbl = setting_get("gw_tronpays_rial_display_name", "").strip() or "💳 درگاه کارت به کارت (TronsPay)"
-            kb.add(types.InlineKeyboardButton(_lbl, callback_data=f"rpay:tronpays_rial:{purchase_id}:{package_id}"))
-            kb.add(types.InlineKeyboardButton(f"   📊 {get_gateway_range_text('tronpays_rial')}", callback_data="noop"))
-        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"renew:{purchase_id}"))
         bot.answer_callback_query(call.id)
         send_or_edit(call, text, kb)
         return
@@ -900,6 +903,14 @@ def _dispatch_callback(call, uid, data):
             bot.answer_callback_query(call.id, "اطلاعات پرداخت هنوز ثبت نشده است.", show_alert=True)
             return
         price = get_effective_price(uid, package_row)
+        if not is_gateway_in_range("card", price):
+            _rng = get_gateway_range_text("card")
+            bot.answer_callback_query(call.id,
+                f"⛔️ مبلغ {fmt_price(price)} تومان برای این درگاه مجاز نیست.\n"
+                f"محدوده مجاز: {_rng}\n\n"
+                "لطفاً درگاه دیگری متناسب با این مبلغ انتخاب کنید.",
+                show_alert=True)
+            return
         payment_id = create_payment("renewal", uid, package_id, price, "card", status="pending",
                                      config_id=item["config_id"])
         state_set(uid, "await_renewal_receipt", payment_id=payment_id, purchase_id=purchase_id)
@@ -930,6 +941,14 @@ def _dispatch_callback(call, uid, data):
             bot.answer_callback_query(call.id, "پکیج یافت نشد.", show_alert=True)
             return
         price = get_effective_price(uid, package_row)
+        if not is_gateway_in_range("crypto", price):
+            _rng = get_gateway_range_text("crypto")
+            bot.answer_callback_query(call.id,
+                f"⛔️ مبلغ {fmt_price(price)} تومان برای این درگاه مجاز نیست.\n"
+                f"محدوده مجاز: {_rng}\n\n"
+                "لطفاً درگاه دیگری متناسب با این مبلغ انتخاب کنید.",
+                show_alert=True)
+            return
         state_set(uid, "renew_crypto_select_coin", package_id=package_id, amount=price,
                   purchase_id=purchase_id, config_id=item["config_id"])
         bot.answer_callback_query(call.id)
@@ -982,6 +1001,14 @@ def _dispatch_callback(call, uid, data):
             bot.answer_callback_query(call.id, "پکیج یافت نشد.", show_alert=True)
             return
         price = get_effective_price(uid, package_row)
+        if not is_gateway_in_range("tetrapay", price):
+            _rng = get_gateway_range_text("tetrapay")
+            bot.answer_callback_query(call.id,
+                f"⛔️ مبلغ {fmt_price(price)} تومان برای درگاه TetraPay مجاز نیست.\n"
+                f"محدوده مجاز: {_rng}\n\n"
+                "لطفاً درگاه دیگری متناسب با این مبلغ انتخاب کنید.",
+                show_alert=True)
+            return
         hash_id = f"rnw-{uid}-{package_id}-{int(datetime.now().timestamp())}"
         success, result = create_tetrapay_order(price, hash_id, f"تمدید {package_row['name']}")
         if not success:
@@ -1072,6 +1099,14 @@ def _dispatch_callback(call, uid, data):
             bot.answer_callback_query(call.id, "پکیج یافت نشد.", show_alert=True)
             return
         price = get_effective_price(uid, package_row)
+        if not is_gateway_in_range("tronpays_rial", price):
+            _rng = get_gateway_range_text("tronpays_rial")
+            bot.answer_callback_query(call.id,
+                f"⛔️ مبلغ {fmt_price(price)} تومان برای درگاه TronsPay مجاز نیست.\n"
+                f"محدوده مجاز: {_rng}\n\n"
+                "لطفاً درگاه دیگری متناسب با این مبلغ انتخاب کنید.",
+                show_alert=True)
+            return
         hash_id = f"rnw-{uid}-{package_id}-{int(datetime.now().timestamp())}"
         success, result = create_tronpays_rial_invoice(price, hash_id, f"تمدید {package_row['name']}")
         if not success:
@@ -1257,6 +1292,31 @@ def _dispatch_callback(call, uid, data):
         state_set(uid, "buy_select_method",
                   package_id=package_id, amount=price,
                   kind="config_purchase")
+        _gw_labels = []
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("💰 پرداخت از موجودی", callback_data=f"pay:wallet:{package_id}"))
+        if is_gateway_available("card", uid, price) and is_card_info_complete():
+            _lbl = setting_get("gw_card_display_name", "").strip() or "💳 کارت به کارت"
+            kb.add(types.InlineKeyboardButton(_lbl, callback_data=f"pay:card:{package_id}"))
+            _gw_labels.append(("card", _lbl))
+        if is_gateway_available("crypto", uid, price):
+            _lbl = setting_get("gw_crypto_display_name", "").strip() or "💎 ارز دیجیتال"
+            kb.add(types.InlineKeyboardButton(_lbl, callback_data=f"pay:crypto:{package_id}"))
+            _gw_labels.append(("crypto", _lbl))
+        if is_gateway_available("tetrapay", uid, price):
+            _lbl = setting_get("gw_tetrapay_display_name", "").strip() or "💳 درگاه کارت به کارت (TetraPay)"
+            kb.add(types.InlineKeyboardButton(_lbl, callback_data=f"pay:tetrapay:{package_id}"))
+            _gw_labels.append(("tetrapay", _lbl))
+        if is_gateway_available("swapwallet_crypto", uid, price):
+            _lbl = setting_get("gw_swapwallet_crypto_display_name", "").strip() or "💳 درگاه کارت به کارت و ارز دیجیتال (SwapWallet)"
+            kb.add(types.InlineKeyboardButton(_lbl, callback_data=f"pay:swapwallet_crypto:{package_id}"))
+            _gw_labels.append(("swapwallet_crypto", _lbl))
+        if is_gateway_available("tronpays_rial", uid, price):
+            _lbl = setting_get("gw_tronpays_rial_display_name", "").strip() or "💳 درگاه کارت به کارت (TronsPay)"
+            kb.add(types.InlineKeyboardButton(_lbl, callback_data=f"pay:tronpays_rial:{package_id}"))
+            _gw_labels.append(("tronpays_rial", _lbl))
+        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"buy:t:{package_row['type_id']}"))
+        _range_guide = build_gateway_range_guide(_gw_labels)
         text = (
             "💳 <b>انتخاب روش پرداخت</b>\n\n"
             f"🧩 نوع: {esc(package_row['type_name'])}\n"
@@ -1264,26 +1324,9 @@ def _dispatch_callback(call, uid, data):
             f"🔋 حجم: {fmt_vol(package_row['volume_gb'])}\n"
             f"⏰ مدت: {fmt_dur(package_row['duration_days'])}\n"
             f"💰 قیمت: {fmt_price(price)} تومان\n\n"
-            "روش پرداخت را انتخاب کنید:"
+            + (_range_guide + "\n\n" if _range_guide else "")
+            + "روش پرداخت را انتخاب کنید:"
         )
-        kb = types.InlineKeyboardMarkup()
-        kb.add(types.InlineKeyboardButton("💰 پرداخت از موجودی", callback_data=f"pay:wallet:{package_id}"))
-        if is_gateway_available("card", uid, price) and is_card_info_complete():
-            kb.add(types.InlineKeyboardButton(setting_get("gw_card_display_name", "").strip() or "💳 کارت به کارت", callback_data=f"pay:card:{package_id}"))
-            kb.add(types.InlineKeyboardButton(f"   📊 {get_gateway_range_text('card')}", callback_data="noop"))
-        if is_gateway_available("crypto", uid, price):
-            kb.add(types.InlineKeyboardButton(setting_get("gw_crypto_display_name", "").strip() or "💎 ارز دیجیتال", callback_data=f"pay:crypto:{package_id}"))
-            kb.add(types.InlineKeyboardButton(f"   📊 {get_gateway_range_text('crypto')}", callback_data="noop"))
-        if is_gateway_available("tetrapay", uid, price):
-            kb.add(types.InlineKeyboardButton(setting_get("gw_tetrapay_display_name", "").strip() or "💳 درگاه کارت به کارت (TetraPay)", callback_data=f"pay:tetrapay:{package_id}"))
-            kb.add(types.InlineKeyboardButton(f"   📊 {get_gateway_range_text('tetrapay')}", callback_data="noop"))
-        if is_gateway_available("swapwallet_crypto", uid, price):
-            kb.add(types.InlineKeyboardButton(setting_get("gw_swapwallet_crypto_display_name", "").strip() or "💳 درگاه کارت به کارت و ارز دیجیتال (SwapWallet)", callback_data=f"pay:swapwallet_crypto:{package_id}"))
-            kb.add(types.InlineKeyboardButton(f"   📊 {get_gateway_range_text('swapwallet_crypto')}", callback_data="noop"))
-        if is_gateway_available("tronpays_rial", uid, price):
-            kb.add(types.InlineKeyboardButton(setting_get("gw_tronpays_rial_display_name", "").strip() or "💳 درگاه کارت به کارت (TronsPay)", callback_data=f"pay:tronpays_rial:{package_id}"))
-            kb.add(types.InlineKeyboardButton(f"   📊 {get_gateway_range_text('tronpays_rial')}", callback_data="noop"))
-        kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"buy:t:{package_row['type_id']}"))
         bot.answer_callback_query(call.id)
         send_or_edit(call, text, kb)
         return
@@ -1353,6 +1396,14 @@ def _dispatch_callback(call, uid, data):
             bot.answer_callback_query(call.id, "اطلاعات پرداخت هنوز ثبت نشده است.", show_alert=True)
             return
         price      = get_effective_price(uid, package_row)
+        if not is_gateway_in_range("card", price):
+            _rng = get_gateway_range_text("card")
+            bot.answer_callback_query(call.id,
+                f"⛔️ مبلغ {fmt_price(price)} تومان برای این درگاه مجاز نیست.\n"
+                f"محدوده مجاز: {_rng}\n\n"
+                "لطفاً درگاه دیگری متناسب با این مبلغ انتخاب کنید.",
+                show_alert=True)
+            return
         payment_id = create_payment("config_purchase", uid, package_id, price, "card", status="pending")
         state_set(uid, "await_purchase_receipt", payment_id=payment_id)
         text = (
@@ -1376,6 +1427,14 @@ def _dispatch_callback(call, uid, data):
             bot.answer_callback_query(call.id, "موجودی این پکیج تمام شده است.", show_alert=True)
             return
         price = get_effective_price(uid, package_row)
+        if not is_gateway_in_range("crypto", price):
+            _rng = get_gateway_range_text("crypto")
+            bot.answer_callback_query(call.id,
+                f"⛔️ مبلغ {fmt_price(price)} تومان برای این درگاه مجاز نیست.\n"
+                f"محدوده مجاز: {_rng}\n\n"
+                "لطفاً درگاه دیگری متناسب با این مبلغ انتخاب کنید.",
+                show_alert=True)
+            return
         state_set(uid, "buy_crypto_select_coin", package_id=package_id, amount=price)
         bot.answer_callback_query(call.id)
         show_crypto_selection(call, amount=price)
@@ -1491,6 +1550,14 @@ def _dispatch_callback(call, uid, data):
             bot.answer_callback_query(call.id, "موجودی این پکیج تمام شده است.", show_alert=True)
             return
         price = get_effective_price(uid, package_row)
+        if not is_gateway_in_range("tetrapay", price):
+            _rng = get_gateway_range_text("tetrapay")
+            bot.answer_callback_query(call.id,
+                f"⛔️ مبلغ {fmt_price(price)} تومان برای درگاه TetraPay مجاز نیست.\n"
+                f"محدوده مجاز: {_rng}\n\n"
+                "لطفاً درگاه دیگری متناسب با این مبلغ انتخاب کنید.",
+                show_alert=True)
+            return
         hash_id = f"cfg-{uid}-{package_id}-{int(datetime.now().timestamp())}"
         success, result = create_tetrapay_order(price, hash_id, f"خرید {package_row['name']}")
         if not success:
@@ -1585,6 +1652,14 @@ def _dispatch_callback(call, uid, data):
             bot.answer_callback_query(call.id, "موجودی این پکیج تمام شده است.", show_alert=True)
             return
         price   = get_effective_price(uid, package_row)
+        if not is_gateway_in_range("tronpays_rial", price):
+            _rng = get_gateway_range_text("tronpays_rial")
+            bot.answer_callback_query(call.id,
+                f"⛔️ مبلغ {fmt_price(price)} تومان برای درگاه TronsPay مجاز نیست.\n"
+                f"محدوده مجاز: {_rng}\n\n"
+                "لطفاً درگاه دیگری متناسب با این مبلغ انتخاب کنید.",
+                show_alert=True)
+            return
         hash_id = f"cfg-{uid}-{package_id}-{int(datetime.now().timestamp())}"
         success, result = create_tronpays_rial_invoice(price, hash_id, f"خرید {package_row['name']}")
         if not success:
@@ -1719,6 +1794,14 @@ def _dispatch_callback(call, uid, data):
         if not amount:
             bot.answer_callback_query(call.id, "ابتدا مبلغ را وارد کنید.", show_alert=True)
             return
+        if not is_gateway_in_range("card", amount):
+            _rng = get_gateway_range_text("card")
+            bot.answer_callback_query(call.id,
+                f"⛔️ مبلغ {fmt_price(amount)} تومان برای این درگاه مجاز نیست.\n"
+                f"محدوده مجاز: {_rng}\n\n"
+                "لطفاً درگاه دیگری متناسب با این مبلغ انتخاب کنید.",
+                show_alert=True)
+            return
         card  = setting_get("payment_card", "")
         bank  = setting_get("payment_bank", "")
         owner = setting_get("payment_owner", "")
@@ -1747,6 +1830,14 @@ def _dispatch_callback(call, uid, data):
         if not amount:
             bot.answer_callback_query(call.id, "ابتدا مبلغ را وارد کنید.", show_alert=True)
             return
+        if not is_gateway_in_range("crypto", amount):
+            _rng = get_gateway_range_text("crypto")
+            bot.answer_callback_query(call.id,
+                f"⛔️ مبلغ {fmt_price(amount)} تومان برای این درگاه مجاز نیست.\n"
+                f"محدوده مجاز: {_rng}\n\n"
+                "لطفاً درگاه دیگری متناسب با این مبلغ انتخاب کنید.",
+                show_alert=True)
+            return
         state_set(uid, "wallet_crypto_select_coin", amount=amount)
         bot.answer_callback_query(call.id)
         show_crypto_selection(call, amount=amount)
@@ -1757,6 +1848,14 @@ def _dispatch_callback(call, uid, data):
         amount = sd.get("amount")
         if not amount:
             bot.answer_callback_query(call.id, "ابتدا مبلغ را وارد کنید.", show_alert=True)
+            return
+        if not is_gateway_in_range("tetrapay", amount):
+            _rng = get_gateway_range_text("tetrapay")
+            bot.answer_callback_query(call.id,
+                f"⛔️ مبلغ {fmt_price(amount)} تومان برای درگاه TetraPay مجاز نیست.\n"
+                f"محدوده مجاز: {_rng}\n\n"
+                "لطفاً درگاه دیگری متناسب با این مبلغ انتخاب کنید.",
+                show_alert=True)
             return
         hash_id = f"wallet-{uid}-{int(datetime.now().timestamp())}"
         success, result = create_tetrapay_order(amount, hash_id, "شارژ کیف پول")
@@ -1798,6 +1897,14 @@ def _dispatch_callback(call, uid, data):
         if not amount:
             bot.answer_callback_query(call.id, "ابتدا مبلغ را وارد کنید.", show_alert=True)
             return
+        if not is_gateway_in_range("swapwallet_crypto", amount):
+            _rng = get_gateway_range_text("swapwallet_crypto")
+            bot.answer_callback_query(call.id,
+                f"⛔️ مبلغ {fmt_price(amount)} تومان برای درگاه SwapWallet مجاز نیست.\n"
+                f"محدوده مجاز: {_rng}\n\n"
+                "لطفاً درگاه دیگری متناسب با این مبلغ انتخاب کنید.",
+                show_alert=True)
+            return
         from ..gateways.swapwallet_crypto import SWAPWALLET_CRYPTO_NETWORKS, NETWORK_LABELS as SW_NET_LABELS
         state_set(uid, "swcrypto_network_select", kind="wallet_charge", amount=amount)
         kb = types.InlineKeyboardMarkup()
@@ -1813,6 +1920,14 @@ def _dispatch_callback(call, uid, data):
         amount = sd.get("amount")
         if not amount:
             bot.answer_callback_query(call.id, "ابتدا مبلغ را وارد کنید.", show_alert=True)
+            return
+        if not is_gateway_in_range("tronpays_rial", amount):
+            _rng = get_gateway_range_text("tronpays_rial")
+            bot.answer_callback_query(call.id,
+                f"⛔️ مبلغ {fmt_price(amount)} تومان برای درگاه TronsPay مجاز نیست.\n"
+                f"محدوده مجاز: {_rng}\n\n"
+                "لطفاً درگاه دیگری متناسب با این مبلغ انتخاب کنید.",
+                show_alert=True)
             return
         order_id = f"wallet-{uid}-{int(datetime.now().timestamp())}"
         success, result = create_tronpays_rial_invoice(amount, order_id, "شارژ کیف پول")
@@ -1910,6 +2025,14 @@ def _dispatch_callback(call, uid, data):
             bot.answer_callback_query(call.id, "موجودی این پکیج تمام شده است.", show_alert=True)
             return
         price = get_effective_price(uid, package_row)
+        if not is_gateway_in_range("swapwallet_crypto", price):
+            _rng = get_gateway_range_text("swapwallet_crypto")
+            bot.answer_callback_query(call.id,
+                f"⛔️ مبلغ {fmt_price(price)} تومان برای درگاه SwapWallet مجاز نیست.\n"
+                f"محدوده مجاز: {_rng}\n\n"
+                "لطفاً درگاه دیگری متناسب با این مبلغ انتخاب کنید.",
+                show_alert=True)
+            return
         from ..gateways.swapwallet_crypto import SWAPWALLET_CRYPTO_NETWORKS, NETWORK_LABELS as SW_NET_LABELS
         state_set(uid, "swcrypto_network_select", kind="config_purchase", package_id=package_id, amount=price)
         kb = types.InlineKeyboardMarkup()
@@ -1969,6 +2092,14 @@ def _dispatch_callback(call, uid, data):
             bot.answer_callback_query(call.id, "پکیج یافت نشد.", show_alert=True)
             return
         price = get_effective_price(uid, package_row)
+        if not is_gateway_in_range("swapwallet_crypto", price):
+            _rng = get_gateway_range_text("swapwallet_crypto")
+            bot.answer_callback_query(call.id,
+                f"⛔️ مبلغ {fmt_price(price)} تومان برای درگاه SwapWallet مجاز نیست.\n"
+                f"محدوده مجاز: {_rng}\n\n"
+                "لطفاً درگاه دیگری متناسب با این مبلغ انتخاب کنید.",
+                show_alert=True)
+            return
         from ..gateways.swapwallet_crypto import SWAPWALLET_CRYPTO_NETWORKS, NETWORK_LABELS as SW_NET_LABELS
         state_set(uid, "swcrypto_network_select", kind="renewal",
                   purchase_id=purchase_id, package_id=package_id,
