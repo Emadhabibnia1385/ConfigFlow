@@ -14,6 +14,7 @@ from .db import (
     update_balance, reserve_first_config, release_reserved_config,
     assign_config_to_user, get_conn, create_pending_order, get_purchase,
     get_all_admin_users,
+    save_payment_admin_message, get_payment_admin_messages, delete_payment_admin_messages,
 )
 from .helpers import esc, fmt_price, display_username, back_button
 import time
@@ -240,9 +241,10 @@ def send_payment_to_admins(payment_id):
     for admin_id in ADMIN_IDS:
         try:
             if payment["receipt_file_id"]:
-                bot.send_photo(admin_id, payment["receipt_file_id"], caption=text, reply_markup=kb)
+                msg = bot.send_photo(admin_id, payment["receipt_file_id"], caption=text, reply_markup=kb)
             else:
-                bot.send_message(admin_id, text, reply_markup=kb)
+                msg = bot.send_message(admin_id, text, reply_markup=kb)
+            save_payment_admin_message(payment_id, admin_id, msg.message_id)
         except Exception:
             pass
     # Also notify sub-admins with approve_payments permission
@@ -255,9 +257,10 @@ def send_payment_to_admins(payment_id):
             continue
         try:
             if payment["receipt_file_id"]:
-                bot.send_photo(sub_id, payment["receipt_file_id"], caption=text, reply_markup=kb)
+                msg = bot.send_photo(sub_id, payment["receipt_file_id"], caption=text, reply_markup=kb)
             else:
-                bot.send_message(sub_id, text, reply_markup=kb)
+                msg = bot.send_message(sub_id, text, reply_markup=kb)
+            save_payment_admin_message(payment_id, sub_id, msg.message_id)
         except Exception:
             pass
     if payment["receipt_file_id"]:
@@ -267,7 +270,33 @@ def send_payment_to_admins(payment_id):
 
 
 # ── Card payment approval / rejection ─────────────────────────────────────────
+def _clear_payment_admin_buttons(payment_id, status_text):
+    """Remove approve/reject buttons from all admin notification messages."""
+    msgs = get_payment_admin_messages(payment_id)
+    for row in msgs:
+        try:
+            bot.edit_message_reply_markup(row["admin_id"], row["message_id"], reply_markup=None)
+        except Exception:
+            pass
+        try:
+            bot.send_message(row["admin_id"], status_text, parse_mode="HTML")
+        except Exception:
+            pass
+    delete_payment_admin_messages(payment_id)
+
+
 def finish_card_payment_approval(payment_id, admin_note, approved):
+    result = _finish_card_payment_approval_inner(payment_id, admin_note, approved)
+    if result:
+        status_text = "✅ <b>تراکنش تأیید شد.</b>" if approved else "❌ <b>تراکنش رد شد.</b>"
+        try:
+            _clear_payment_admin_buttons(payment_id, status_text)
+        except Exception:
+            pass
+    return result
+
+
+def _finish_card_payment_approval_inner(payment_id, admin_note, approved):
     from .ui.notifications import (
         deliver_purchase_message, admin_purchase_notify,
         admin_renewal_notify, notify_pending_order_to_admins,

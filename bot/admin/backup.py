@@ -24,7 +24,7 @@ def _send_backup(target_chat_id):
                 visible_file_name=fname
             )
         with open(DB_NAME, "rb") as f:
-            send_document_to_topic("backup", f, caption=caption)
+            send_document_to_topic("backup", f, caption=caption, visible_file_name=fname)
     except Exception as e:
         try:
             bot.send_message(target_chat_id, f"❌ خطا در ارسال بکاپ: {esc(str(e))}")
@@ -33,19 +33,18 @@ def _send_backup(target_chat_id):
 
 
 def _backup_loop():
+    last_backup_at = 0.0  # unix timestamp of last successful backup
     while True:
+        time.sleep(60)  # check every minute
         try:
             enabled  = setting_get("backup_enabled", "0")
             interval = int(setting_get("backup_interval", "24") or "24")
             target   = setting_get("backup_target_id", "").strip()
-            if enabled == "1" and target:
+            if enabled != "1" or not target:
+                continue
+            now = time.time()
+            if now - last_backup_at >= interval * 3600:
                 _send_backup(int(target) if target.lstrip("-").isdigit() else target)
+                last_backup_at = now
         except Exception:
             pass
-        # Sleep interval hours, but re-check every minute for setting changes
-        current_interval = int(setting_get("backup_interval", "24") or "24")
-        for _ in range(current_interval * 60):
-            time.sleep(60)
-            new_interval = int(setting_get("backup_interval", "24") or "24")
-            if new_interval != current_interval:
-                break

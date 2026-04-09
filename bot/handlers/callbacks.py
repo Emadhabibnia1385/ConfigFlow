@@ -37,6 +37,8 @@ from ..db import (
     get_all_pinned_messages, get_pinned_message, add_pinned_message,
     update_pinned_message, delete_pinned_message,
     save_pinned_send, get_pinned_sends, delete_pinned_sends,
+    save_payment_admin_message, get_payment_admin_messages, delete_payment_admin_messages,
+    save_agency_request_message, get_agency_request_messages, delete_agency_request_messages,
 )
 from ..gateways.base import is_gateway_available, is_card_info_complete
 from ..gateways.crypto import fetch_crypto_prices
@@ -57,7 +59,7 @@ from ..ui.notifications import (
 )
 from ..group_manager import (
     ensure_group_topics, reset_and_recreate_topics, get_group_id,
-    _count_active_topics, TOPICS, send_to_topic,
+    _count_active_topics, TOPICS, send_to_topic, log_admin_action,
 )
 from ..payments import (
     get_effective_price, show_payment_method_selection,
@@ -606,16 +608,34 @@ def _dispatch_callback(call, uid, data):
             f"🔢 آیدی: <code>{user['user_id']}</code>\n\n"
             f"📝 متن درخواست: <i>بدون متن</i>"
         )
-        kb = types.InlineKeyboardMarkup()
-        kb.row(
-            types.InlineKeyboardButton("✅ تأیید", callback_data=f"agency:approve:{uid}"),
-            types.InlineKeyboardButton("❌ رد", callback_data=f"agency:reject:{uid}"),
+        admin_kb = types.InlineKeyboardMarkup()
+        admin_kb.row(
+            types.InlineKeyboardButton("✅ تأیید", callback_data=f"agency:approve_now:{uid}"),
+            types.InlineKeyboardButton("❌ رد", callback_data=f"agency:reject_now:{uid}"),
         )
         for admin_id in ADMIN_IDS:
             try:
-                bot.send_message(admin_id, text, reply_markup=kb)
+                msg = bot.send_message(admin_id, text, reply_markup=admin_kb)
+                save_agency_request_message(uid, admin_id, msg.message_id)
             except Exception:
                 pass
+        for row in get_all_admin_users():
+            sub_id = row["user_id"]
+            if sub_id in ADMIN_IDS:
+                continue
+            import json as _json
+            perms = _json.loads(row["permissions"] or "{}")
+            if not (perms.get("full") or perms.get("agency")):
+                continue
+            try:
+                msg = bot.send_message(sub_id, text, reply_markup=admin_kb)
+                save_agency_request_message(uid, sub_id, msg.message_id)
+            except Exception:
+                pass
+        if setting_get("notif_own_agency_request", "1") == "1" or True:
+            grp_msg = send_to_topic("agency_request", text, reply_markup=admin_kb)
+            if grp_msg:
+                save_agency_request_message(uid, grp_msg.chat.id, grp_msg.message_id)
         return
 
     if data.startswith("agency:approve:"):
@@ -645,29 +665,75 @@ def _dispatch_callback(call, uid, data):
         state_clear(uid)
         with get_conn() as conn:
             conn.execute("UPDATE users SET is_agent=1 WHERE user_id=?", (target_uid,))
-        # Apply default discount
         default_pct = int(setting_get("agency_default_discount_pct", "20") or "20")
         if default_pct > 0:
             set_agency_price_config(target_uid, "global", "pct", default_pct)
         bot.answer_callback_query(call.id, "✅ نمایندگی تأیید شد.")
-        _show_admin_user_detail(call, target_uid)
+        # Remove buttons from all tracked messages
+        for row in get_agency_request_messages(target_uid):
+            try:
+                bot.edit_message_reply_markup(row["chat_id"], row["message_id"], reply_markup=None)
+            except Exception:
+                pass
+        delete_agency_request_messages(target_uid)
+        # Notify user
         try:
-            msg = "🎉 <b>درخواست نمایندگی شما تأیید شد!</b>\n\nاکنون شما نماینده هستید."
-            bot.send_message(target_uid, msg)
+            bot.send_message(target_uid,
+                "🎉 <b>درخواست نمایندگی شما تأیید شد!</b>\n\nاکنون شما نماینده هستید.",
+                parse_mode="HTML")
         except Exception:
             pass
-        if default_pct > 0:
-            confirm_text = (
-                f"✅ نمایندگی کاربر <code>{target_uid}</code> تأیید شد.\n\n"
-                f"📊 به صورت پیش‌فرض <b>{default_pct}%</b> تخفیف روی همه پکیج‌ها برای ایشان تعیین شد.\n"
-                "برای تغییر درصد کلی یا تعیین قیمت تکتک دکمه زیر را بزنید:"
-            )
-            kb_confirm = types.InlineKeyboardMarkup()
-            kb_confirm.add(types.InlineKeyboardButton(
-                "💰 قیمت نمایندگی کاربر",
-                callback_data=f"adm:agcfg:{target_uid}"
-            ))
-            bot.send_message(call.message.chat.id, confirm_text, reply_markup=kb_confirm)
+        # Log to agency_log topic
+        user_row = get_user(target_uid)
+        send_to_topic("agency_log",
+            f"✅ <b>نمایندگی تأیید شد</b>\n\n"
+            f"👤 نام: {esc(user_row['full_name'] if user_row else str(target_uid))}\n"
+            f"🆔 نام کاربری: {esc(user_row['username'] or 'ندارد' if user_row else '-')}\n"
+            f"🆔 آیدی: <code>{target_uid}</code>\n"
+            f"📊 تخفیف پیش‌فرض: <b>{default_pct}%</b>\n"
+            f"تأییدکننده: <code>{uid}</code>"
+        )
+        # If called from admin DM, show user detail panel
+        if call.message.chat.type == "private":
+            _show_admin_user_detail(call, target_uid)
+        else:
+            try:
+                bot.send_message(call.message.chat.id,
+                    f"✅ نمایندگی کاربر <code>{target_uid}</code> تأیید شد.",
+                    message_thread_id=call.message.message_thread_id,
+                    parse_mode="HTML")
+            except Exception:
+                pass
+        return
+
+    if data.startswith("agency:reject_now:"):
+        if not is_admin(uid):
+            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
+            return
+        target_uid = int(data.split(":")[2])
+        bot.answer_callback_query(call.id, "❌ رد شد.")
+        # Remove buttons from all tracked messages
+        for row in get_agency_request_messages(target_uid):
+            try:
+                bot.edit_message_reply_markup(row["chat_id"], row["message_id"], reply_markup=None)
+            except Exception:
+                pass
+        delete_agency_request_messages(target_uid)
+        # Notify user
+        try:
+            bot.send_message(target_uid,
+                "❌ <b>درخواست نمایندگی شما رد شد.</b>",
+                parse_mode="HTML")
+        except Exception:
+            pass
+        # Log to agency_log topic
+        user_row = get_user(target_uid)
+        send_to_topic("agency_log",
+            f"❌ <b>نمایندگی رد شد</b>\n\n"
+            f"👤 نام: {esc(user_row['full_name'] if user_row else str(target_uid))}\n"
+            f"🆔 آیدی: <code>{target_uid}</code>\n"
+            f"ردکننده: <code>{uid}</code>"
+        )
         return
 
     if data.startswith("agency:reject:"):
@@ -1063,7 +1129,14 @@ def _dispatch_callback(call, uid, data):
         svc_name = ""
         try:
             with get_conn() as conn:
-                cfg_row = conn.execute("SELECT service_name FROM configs WHERE id=?", (config_id,)).fetchone()
+                cfg_row = conn.execute(
+                    "SELECT c.service_name, c.package_id, p.name AS package_name, "
+                    "p.volume_gb, p.duration_days, p.price, t.name AS type_name "
+                    "FROM configs c "
+                    "JOIN packages p ON p.id = c.package_id "
+                    "JOIN config_types t ON t.id = p.type_id "
+                    "WHERE c.id=?", (config_id,)
+                ).fetchone()
             svc_name = urllib.parse.unquote(cfg_row["service_name"] or "") if cfg_row else ""
             bot.send_message(target_uid,
                 f"🎉 <b>تمدید سرویس انجام شد!</b>\n\n"
@@ -1071,12 +1144,33 @@ def _dispatch_callback(call, uid, data):
                 "از اعتماد شما سپاسگزاریم. 🙏")
         except Exception:
             pass
+        # Renewal log — find the payment method from the original admin message
+        renewal_method = ""
         try:
-            send_to_topic("renewal_log",
-                f"🔄 <b>تمدید تأیید شد</b>\n\n"
-                f"🔢 آیدی کاربر: <code>{target_uid}</code>\n"
-                f"🔮 سرویس: {esc(svc_name or str(config_id))}"
+            orig_text = call.message.text or call.message.caption or ""
+            if "(" in orig_text and ")" in orig_text:
+                renewal_method = orig_text.split("(", 1)[1].split(")", 1)[0]
+        except Exception:
+            pass
+        try:
+            user_row = get_user(target_uid)
+            log_text = (
+                f"🔄 | <b>تمدید تأیید شد</b>"
+                f"{(' (' + esc(renewal_method) + ')') if renewal_method else ''}\n\n"
+                f"▫️ آیدی کاربر: <code>{target_uid}</code>\n"
+                f"👨‍💼 نام: {esc(user_row['full_name'] if user_row else '')}\n"
+                f"⚡️ نام کاربری: {esc((user_row['username'] or 'ندارد') if user_row else 'ندارد')}\n"
+                f"🔮 نام سرویس: {esc(svc_name or str(config_id))}\n"
             )
+            if cfg_row:
+                log_text += (
+                    f"🚦 سرور: {esc(cfg_row['type_name'])}\n"
+                    f"✏️ پکیج: {esc(cfg_row['package_name'])}\n"
+                    f"🔋 حجم: {cfg_row['volume_gb']} گیگ\n"
+                    f"⏰ مدت: {cfg_row['duration_days']} روز\n"
+                    f"💰 قیمت: {fmt_price(cfg_row['price'])} تومان"
+                )
+            send_to_topic("renewal_log", log_text)
         except Exception:
             pass
         return
@@ -2013,6 +2107,7 @@ def _dispatch_callback(call, uid, data):
                 state_clear(uid)
                 bot.answer_callback_query(call.id, "✅ نوع ثبت شد.")
                 bot.send_message(call.message.chat.id, "✅ نوع جدید ثبت شد.", reply_markup=kb_admin_panel())
+                log_admin_action(uid, f"نوع جدید ثبت شد: <b>{esc(name)}</b>")
             except sqlite3.IntegrityError:
                 state_clear(uid)
                 bot.answer_callback_query(call.id, "⚠️ این نوع قبلاً ثبت شده.", show_alert=True)
@@ -2025,6 +2120,7 @@ def _dispatch_callback(call, uid, data):
         update_type_description(type_id, "")
         state_clear(uid)
         bot.answer_callback_query(call.id, "✅ توضیحات حذف شد.")
+        log_admin_action(uid, f"توضیحات نوع #{type_id} حذف شد")
         _show_admin_types(call)
         return
 
@@ -2038,6 +2134,7 @@ def _dispatch_callback(call, uid, data):
         update_type_active(type_id, 0 if cur else 1)
         new_status = "غیرفعال" if cur else "فعال"
         bot.answer_callback_query(call.id, f"✅ نوع {new_status} شد.")
+        log_admin_action(uid, f"نوع <b>{esc(row['name'])}</b> {new_status} شد")
         # re-open the edit screen with updated state
         call.data = f"admin:type:edit:{type_id}"
         data      = call.data
@@ -2052,6 +2149,7 @@ def _dispatch_callback(call, uid, data):
         cur = pkg["active"] if "active" in pkg.keys() else 1
         new_status = "غیرفعال" if cur else "فعال"
         bot.answer_callback_query(call.id, f"✅ پکیج {new_status} شد.")
+        log_admin_action(uid, f"پکیج <b>{esc(pkg['name'])}</b> {new_status} شد")
         call.data = f"admin:pkg:edit:{package_id}"
         data      = call.data
 
@@ -2089,6 +2187,7 @@ def _dispatch_callback(call, uid, data):
             return
         delete_type(type_id)
         bot.answer_callback_query(call.id, "✅ نوع حذف شد.")
+        log_admin_action(uid, f"نوع #{type_id} حذف شد")
         _show_admin_types(call)
         return
 
@@ -2107,6 +2206,7 @@ def _dispatch_callback(call, uid, data):
             return
         delete_type(type_id)
         bot.answer_callback_query(call.id, "✅ نوع و تمام پکیج‌های آن حذف شدند.")
+        log_admin_action(uid, f"نوع #{type_id} با تمام پکیج‌ها حذف شد")
         _show_admin_types(call)
         return
 
@@ -2189,6 +2289,7 @@ def _dispatch_callback(call, uid, data):
             return
         delete_package(package_id)
         bot.answer_callback_query(call.id, "✅ پکیج حذف شد.")
+        log_admin_action(uid, f"پکیج #{package_id} حذف شد")
         _show_admin_types(call)
         return
 
@@ -2205,6 +2306,7 @@ def _dispatch_callback(call, uid, data):
             return
         delete_package(package_id)
         bot.answer_callback_query(call.id, "✅ پکیج و کانفیگ‌های آن حذف شدند.")
+        log_admin_action(uid, f"پکیج #{package_id} با کانفیگ‌ها حذف شد")
         _show_admin_types(call)
         return
 
@@ -2684,6 +2786,7 @@ def _dispatch_callback(call, uid, data):
             update_config_field(config_id, "package_id", package_id)
             if pkg:
                 update_config_field(config_id, "type_id", pkg["type_id"])
+            log_admin_action(uid, f"پکیج کانفیگ #{config_id} به #{package_id} تغییر کرد")
             bot.answer_callback_query(call.id, "✅ پکیج تغییر کرد.")
             _fake_call(call, f"adm:stk:cfg:{config_id}")
             return
@@ -3002,6 +3105,7 @@ def _dispatch_callback(call, uid, data):
             return
         remove_admin_user(target_id)
         bot.answer_callback_query(call.id, "✅ ادمین حذف شد.")
+        log_admin_action(uid, f"ادمین <code>{target_id}</code> حذف شد")
         _show_admin_admins_panel(call)
         return
 
@@ -3124,6 +3228,7 @@ def _dispatch_callback(call, uid, data):
         perm_text = "\n".join(f"• {p}" for p in active_perm_names) or "— بدون دسترسی —"
         if edit_mode:
             update_admin_permissions(target_id, perms)
+            log_admin_action(uid, f"دسترسی‌های ادمین {target_id} به‌روزرسانی شد")
             state_clear(uid)
             bot.answer_callback_query(call.id, "✅ دسترسی‌ها به‌روز شد.")
             try:
@@ -3135,6 +3240,7 @@ def _dispatch_callback(call, uid, data):
                 pass
         else:
             add_admin_user(target_id, uid, perms)
+            log_admin_action(uid, f"ادمین جدید {target_id} اضافه شد")
             state_clear(uid)
             bot.answer_callback_query(call.id, "✅ ادمین اضافه شد.")
             try:
@@ -3171,6 +3277,7 @@ def _dispatch_callback(call, uid, data):
                 label = "امن"
             set_user_status(target_id, new_status)
             bot.answer_callback_query(call.id, f"وضعیت کاربر به {label} تغییر کرد.")
+            log_admin_action(uid, f"وضعیت کاربر <code>{target_id}</code> به {label} تغییر کرد")
             _show_admin_user_detail(call, target_id)
             return
 
@@ -3180,6 +3287,7 @@ def _dispatch_callback(call, uid, data):
             set_user_agent(target_id, new_flag)
             label = "فعال" if new_flag else "غیرفعال"
             bot.answer_callback_query(call.id, f"نمایندگی {label} شد.")
+            log_admin_action(uid, f"نمایندگی کاربر <code>{target_id}</code> {label} شد")
             _show_admin_user_detail(call, target_id)
             return
 
@@ -3445,6 +3553,7 @@ def _dispatch_callback(call, uid, data):
         cur      = setting_get("agency_request_enabled", "1")
         new      = "0" if cur == "1" else "1"
         setting_set("agency_request_enabled", new)
+        log_admin_action(uid, f"درخواست نمایندگی {'فعال' if new == '1' else 'غیرفعال'} شد")
         req_icon  = "🟢" if new == "1" else "🔴"
         req_label = "روشن" if new == "1" else "خاموش"
         bot.answer_callback_query(call.id, f"درخواست نمایندگی: {req_label}")
@@ -3723,6 +3832,7 @@ def _dispatch_callback(call, uid, data):
             return
         bot.answer_callback_query(call.id, "در حال ساخت تاپیک‌ها...", show_alert=False)
         result = ensure_group_topics()
+        log_admin_action(uid, "ساخت تاپیک‌های گروه")
         send_or_edit(call, f"🛠 <b>ساخت تاپیک</b>\n\n{result}", back_button("admin:group"))
         return
 
@@ -3732,6 +3842,7 @@ def _dispatch_callback(call, uid, data):
             return
         bot.answer_callback_query(call.id, "در حال بازسازی...", show_alert=False)
         result = reset_and_recreate_topics()
+        log_admin_action(uid, "بازسازی تاپیک‌های گروه")
         send_or_edit(call, f"♻️ <b>بازسازی تاپیک‌ها</b>\n\n{result}", back_button("admin:group"))
         return
 
@@ -3767,6 +3878,7 @@ def _dispatch_callback(call, uid, data):
         cur = setting_get("agency_request_enabled", "1")
         new = "0" if cur == "1" else "1"
         setting_set("agency_request_enabled", new)
+        log_admin_action(uid, f"درخواست نمایندگی از تنظیمات {'فعال' if new == '1' else 'غیرفعال'} شد")
         label = "فعال" if new == "1" else "غیرفعال"
         bot.answer_callback_query(call.id, f"درخواست نمایندگی: {label}")
         # re-render settings
@@ -3825,10 +3937,13 @@ def _dispatch_callback(call, uid, data):
         ("renewal_log",      "🔄 لاگ تمدید"),
         ("wallet_log",       "💰 لاگ کیف‌پول"),
         ("test_report",      "🧪 گزارش تست"),
-        ("broadcast_report", "📢 اطلاع‌رسانی"),
+        ("broadcast_report", "📢 اطلاع‌رسانی و پین"),
+        ("referral_log",     "🔗 زیرمجموعه‌گیری"),
+        ("agency_request",   "🤝 درخواست نمایندگی"),
+        ("agency_log",       "🏢 لاگ نمایندگان"),
+        ("admin_ops_log",    "📝 لاگ عملیاتی"),
         ("error_log",        "❌ گزارش خطا"),
         ("backup",           "💾 بکاپ"),
-        ("agency_request",   "🤝 درخواست نمایندگی"),
     ]
 
     if data == "adm:notif":
@@ -3877,6 +3992,7 @@ def _dispatch_callback(call, uid, data):
         cur = setting_get(f"notif_own_{key}", "1")
         new = "0" if cur == "1" else "1"
         setting_set(f"notif_own_{key}", new)
+        log_admin_action(uid, f"اعلان شخصی {key} {'فعال' if new == '1' else 'غیرفعال'} شد")
         label_map = dict(_NOTIF_TYPES)
         lbl = label_map.get(key, key)
         status_lbl = "فعال" if new == "1" else "غیرفعال"
@@ -3944,6 +4060,7 @@ def _dispatch_callback(call, uid, data):
         cur = setting_get(f"notif_grp_{key}", "1")
         new = "0" if cur == "1" else "1"
         setting_set(f"notif_grp_{key}", new)
+        log_admin_action(uid, f"اعلان گروه {key} {'فعال' if new == '1' else 'غیرفعال'} شد")
         label_map = dict(_NOTIF_TYPES)
         lbl = label_map.get(key, key)
         status_lbl = "فعال" if new == "1" else "غیرفعال"
@@ -3972,6 +4089,7 @@ def _dispatch_callback(call, uid, data):
         cur = setting_get(f"notif_bot_{key}", "1")
         new = "0" if cur == "1" else "1"
         setting_set(f"notif_bot_{key}", new)
+        log_admin_action(uid, f"اعلان ربات {key} {'فعال' if new == '1' else 'غیرفعال'} شد")
         label_map = dict(_NOTIF_TYPES)
         lbl = label_map.get(key, key)
         status_lbl = "فعال" if new == "1" else "غیرفعال"
@@ -4061,6 +4179,7 @@ def _dispatch_callback(call, uid, data):
     if data == "adm:shop:toggle_open":
         current = setting_get("shop_open", "1")
         setting_set("shop_open", "0" if current == "1" else "1")
+        log_admin_action(uid, f"فروشگاه {'بسته' if current == '1' else 'باز'} شد")
         bot.answer_callback_query(call.id, "وضعیت فروش تغییر کرد.")
         # Re-show shop settings
         data = "adm:set:shop"
@@ -4073,6 +4192,7 @@ def _dispatch_callback(call, uid, data):
     if data == "adm:shop:toggle_stock":
         current = setting_get("preorder_mode", "0")
         setting_set("preorder_mode", "0" if current == "1" else "1")
+        log_admin_action(uid, f"حالت پیش‌فروش {'غیرفعال' if current == '1' else 'فعال'} شد")
         bot.answer_callback_query(call.id, "تنظیم فروش بر اساس موجودی تغییر کرد.")
         from types import SimpleNamespace as _SN
         fake = _SN(id=call.id, from_user=call.from_user, message=call.message, data="adm:set:shop")
@@ -4143,6 +4263,7 @@ def _dispatch_callback(call, uid, data):
         new_status = cycle.get(cur, "on")
         setting_set("bot_status", new_status)
         labels = {"on": "روشن", "off": "خاموش", "update": "بروزرسانی"}
+        log_admin_action(uid, f"وضعیت ربات به {labels[new_status]} تغییر کرد")
         bot.answer_callback_query(call.id, f"وضعیت ربات: {labels[new_status]}")
         send_or_edit(call, _ops_menu_text(), _build_ops_kb())
         return
@@ -4154,6 +4275,7 @@ def _dispatch_callback(call, uid, data):
         cur = setting_get("manual_renewal_enabled", "1")
         new_val = "0" if cur == "1" else "1"
         setting_set("manual_renewal_enabled", new_val)
+        log_admin_action(uid, f"تمدید دستی {'فعال' if new_val == '1' else 'غیرفعال'} شد")
         label = "فعال" if new_val == "1" else "غیرفعال"
         bot.answer_callback_query(call.id, f"تمدید دستی: {label}")
         send_or_edit(call, _ops_menu_text(), _build_ops_kb())
@@ -4166,6 +4288,7 @@ def _dispatch_callback(call, uid, data):
         cur = setting_get("referral_enabled", "1")
         new_val = "0" if cur == "1" else "1"
         setting_set("referral_enabled", new_val)
+        log_admin_action(uid, f"زیرمجموعه‌گیری {'فعال' if new_val == '1' else 'غیرفعال'} شد")
         label = "فعال" if new_val == "1" else "غیرفعال"
         bot.answer_callback_query(call.id, f"زیرمجموعه‌گیری: {label}")
         send_or_edit(call, _ops_menu_text(), _build_ops_kb())
@@ -4278,6 +4401,7 @@ def _dispatch_callback(call, uid, data):
             return
         setting_set("referral_banner_text", "")
         setting_set("referral_banner_photo", "")
+        log_admin_action(uid, "بنر اشتراک‌گذاری حذف شد")
         bot.answer_callback_query(call.id, "بنر سفارشی حذف شد.")
         send_or_edit(call, _ref_settings_text(), _ref_settings_kb())
         return
@@ -4289,6 +4413,7 @@ def _dispatch_callback(call, uid, data):
             return
         cur = setting_get("referral_start_reward_enabled", "0")
         setting_set("referral_start_reward_enabled", "0" if cur == "1" else "1")
+        log_admin_action(uid, f"هدیه استارت زیرمجموعه {'غیرفعال' if cur == '1' else 'فعال'} شد")
         bot.answer_callback_query(call.id)
         send_or_edit(call, _ref_settings_text(), _ref_settings_kb())
         return
@@ -4313,6 +4438,7 @@ def _dispatch_callback(call, uid, data):
         cur = setting_get("referral_start_reward_type", "wallet")
         new_val = "config" if cur == "wallet" else "wallet"
         setting_set("referral_start_reward_type", new_val)
+        log_admin_action(uid, f"نوع هدیه استارت به {'کیف پول' if new_val == 'wallet' else 'کانفیگ'} تغییر کرد")
         bot.answer_callback_query(call.id, f"نوع هدیه: {'کیف پول' if new_val == 'wallet' else 'کانفیگ'}")
         send_or_edit(call, _ref_settings_text(), _ref_settings_kb())
         return
@@ -4352,6 +4478,7 @@ def _dispatch_callback(call, uid, data):
     if data.startswith("adm:ref:sr:pkgsel:"):
         pkg_id = data.split(":")[4]
         setting_set("referral_start_reward_package", pkg_id)
+        log_admin_action(uid, f"پکیج هدیه استارت به #{pkg_id} تنظیم شد")
         bot.answer_callback_query(call.id, "پکیج هدیه استارت تنظیم شد.")
         send_or_edit(call, _ref_settings_text(), _ref_settings_kb())
         return
@@ -4363,6 +4490,7 @@ def _dispatch_callback(call, uid, data):
             return
         cur = setting_get("referral_purchase_reward_enabled", "0")
         setting_set("referral_purchase_reward_enabled", "0" if cur == "1" else "1")
+        log_admin_action(uid, f"هدیه خرید زیرمجموعه {'غیرفعال' if cur == '1' else 'فعال'} شد")
         bot.answer_callback_query(call.id)
         send_or_edit(call, _ref_settings_text(), _ref_settings_kb())
         return
@@ -4388,6 +4516,7 @@ def _dispatch_callback(call, uid, data):
         cur = setting_get("referral_purchase_reward_type", "wallet")
         new_val = "config" if cur == "wallet" else "wallet"
         setting_set("referral_purchase_reward_type", new_val)
+        log_admin_action(uid, f"نوع هدیه خرید به {'کیف پول' if new_val == 'wallet' else 'کانفیگ'} تغییر کرد")
         bot.answer_callback_query(call.id, f"نوع هدیه: {'کیف پول' if new_val == 'wallet' else 'کانفیگ'}")
         send_or_edit(call, _ref_settings_text(), _ref_settings_kb())
         return
@@ -4426,6 +4555,7 @@ def _dispatch_callback(call, uid, data):
     if data.startswith("adm:ref:pr:pkgsel:"):
         pkg_id = data.split(":")[4]
         setting_set("referral_purchase_reward_package", pkg_id)
+        log_admin_action(uid, f"پکیج هدیه خرید به #{pkg_id} تنظیم شد")
         bot.answer_callback_query(call.id, "پکیج هدیه خرید تنظیم شد.")
         send_or_edit(call, _ref_settings_text(), _ref_settings_kb())
         return
@@ -4500,6 +4630,7 @@ def _dispatch_callback(call, uid, data):
     if data == "adm:gw:card:toggle":
         enabled = setting_get("gw_card_enabled", "0")
         setting_set("gw_card_enabled", "0" if enabled == "1" else "1")
+        log_admin_action(uid, f"درگاه کارت {'غیرفعال' if enabled == '1' else 'فعال'} شد")
         bot.answer_callback_query(call.id, "تغییر یافت.")
         _fake_call(call, "adm:set:gw:card")
         return
@@ -4507,6 +4638,7 @@ def _dispatch_callback(call, uid, data):
     if data == "adm:gw:card:vis":
         vis = setting_get("gw_card_visibility", "public")
         setting_set("gw_card_visibility", "secure" if vis == "public" else "public")
+        log_admin_action(uid, f"نمایش درگاه کارت به {'secure' if vis == 'public' else 'public'} تغییر کرد")
         bot.answer_callback_query(call.id, "تغییر یافت.")
         _fake_call(call, "adm:set:gw:card")
         return
@@ -4558,6 +4690,7 @@ def _dispatch_callback(call, uid, data):
     if data == "adm:gw:crypto:toggle":
         enabled = setting_get("gw_crypto_enabled", "0")
         setting_set("gw_crypto_enabled", "0" if enabled == "1" else "1")
+        log_admin_action(uid, f"درگاه کریپتو {'غیرفعال' if enabled == '1' else 'فعال'} شد")
         bot.answer_callback_query(call.id, "تغییر یافت.")
         _fake_call(call, "adm:set:gw:crypto")
         return
@@ -4565,6 +4698,7 @@ def _dispatch_callback(call, uid, data):
     if data == "adm:gw:crypto:vis":
         vis = setting_get("gw_crypto_visibility", "public")
         setting_set("gw_crypto_visibility", "secure" if vis == "public" else "public")
+        log_admin_action(uid, f"نمایش درگاه کریپتو به {'secure' if vis == 'public' else 'public'} تغییر کرد")
         bot.answer_callback_query(call.id, "تغییر یافت.")
         _fake_call(call, "adm:set:gw:crypto")
         return
@@ -4630,6 +4764,7 @@ def _dispatch_callback(call, uid, data):
     if data == "adm:gw:tetrapay:toggle":
         enabled = setting_get("gw_tetrapay_enabled", "0")
         setting_set("gw_tetrapay_enabled", "0" if enabled == "1" else "1")
+        log_admin_action(uid, f"درگاه تتراپی {'غیرفعال' if enabled == '1' else 'فعال'} شد")
         bot.answer_callback_query(call.id, "تغییر یافت.")
         _fake_call(call, "adm:set:gw:tetrapay")
         return
@@ -4637,6 +4772,7 @@ def _dispatch_callback(call, uid, data):
     if data == "adm:gw:tetrapay:vis":
         vis = setting_get("gw_tetrapay_visibility", "public")
         setting_set("gw_tetrapay_visibility", "secure" if vis == "public" else "public")
+        log_admin_action(uid, f"نمایش درگاه تتراپی به {'secure' if vis == 'public' else 'public'} تغییر کرد")
         bot.answer_callback_query(call.id, "تغییر یافت.")
         _fake_call(call, "adm:set:gw:tetrapay")
         return
@@ -4644,6 +4780,7 @@ def _dispatch_callback(call, uid, data):
     if data == "adm:gw:tetrapay:mode_bot":
         cur = setting_get("tetrapay_mode_bot", "1")
         setting_set("tetrapay_mode_bot", "0" if cur == "1" else "1")
+        log_admin_action(uid, f"حالت bot تتراپی {'غیرفعال' if cur == '1' else 'فعال'} شد")
         bot.answer_callback_query(call.id, "تغییر یافت.")
         _fake_call(call, "adm:set:gw:tetrapay")
         return
@@ -4651,6 +4788,7 @@ def _dispatch_callback(call, uid, data):
     if data == "adm:gw:tetrapay:mode_web":
         cur = setting_get("tetrapay_mode_web", "1")
         setting_set("tetrapay_mode_web", "0" if cur == "1" else "1")
+        log_admin_action(uid, f"حالت web تتراپی {'غیرفعال' if cur == '1' else 'فعال'} شد")
         bot.answer_callback_query(call.id, "تغییر یافت.")
         _fake_call(call, "adm:set:gw:tetrapay")
         return
@@ -4723,6 +4861,7 @@ def _dispatch_callback(call, uid, data):
     if data == "adm:gw:swapwallet_crypto:toggle":
         enabled = setting_get("gw_swapwallet_crypto_enabled", "0")
         setting_set("gw_swapwallet_crypto_enabled", "0" if enabled == "1" else "1")
+        log_admin_action(uid, f"درگاه سواپ‌ولت کریپتو {'غیرفعال' if enabled == '1' else 'فعال'} شد")
         bot.answer_callback_query(call.id, "تغییر یافت.")
         _fake_call(call, "adm:set:gw:swapwallet_crypto")
         return
@@ -4730,6 +4869,7 @@ def _dispatch_callback(call, uid, data):
     if data == "adm:gw:swapwallet_crypto:vis":
         vis = setting_get("gw_swapwallet_crypto_visibility", "public")
         setting_set("gw_swapwallet_crypto_visibility", "secure" if vis == "public" else "public")
+        log_admin_action(uid, f"نمایش درگاه سواپ‌ولت کریپتو به {'secure' if vis == 'public' else 'public'} تغییر کرد")
         bot.answer_callback_query(call.id, "تغییر یافت.")
         _fake_call(call, "adm:set:gw:swapwallet_crypto")
         return
@@ -4812,6 +4952,7 @@ def _dispatch_callback(call, uid, data):
     if data == "adm:gw:tronpays_rial:toggle":
         enabled = setting_get("gw_tronpays_rial_enabled", "0")
         setting_set("gw_tronpays_rial_enabled", "0" if enabled == "1" else "1")
+        log_admin_action(uid, f"درگاه ترون‌پیز ریالی {'غیرفعال' if enabled == '1' else 'فعال'} شد")
         bot.answer_callback_query(call.id, "تغییر یافت.")
         _fake_call(call, "adm:set:gw:tronpays_rial")
         return
@@ -4819,6 +4960,7 @@ def _dispatch_callback(call, uid, data):
     if data == "adm:gw:tronpays_rial:vis":
         vis = setting_get("gw_tronpays_rial_visibility", "public")
         setting_set("gw_tronpays_rial_visibility", "secure" if vis == "public" else "public")
+        log_admin_action(uid, f"نمایش درگاه ترون‌پیز ریالی به {'secure' if vis == 'public' else 'public'} تغییر کرد")
         bot.answer_callback_query(call.id, "تغییر یافت.")
         _fake_call(call, "adm:set:gw:tronpays_rial")
         return
@@ -4869,6 +5011,7 @@ def _dispatch_callback(call, uid, data):
         gw_name = data.split(":")[2]
         cur = setting_get(f"gw_{gw_name}_range_enabled", "0")
         setting_set(f"gw_{gw_name}_range_enabled", "0" if cur == "1" else "1")
+        log_admin_action(uid, f"بازه مبلغ درگاه {gw_name} {'غیرفعال' if cur == '1' else 'فعال'} شد")
         bot.answer_callback_query(call.id, "تغییر یافت.")
         _fake_call(call, f"adm:gw:{gw_name}:range")
         return
@@ -4986,6 +5129,7 @@ def _dispatch_callback(call, uid, data):
     if data == "adm:ft:toggle":
         enabled = setting_get("free_test_enabled", "1")
         setting_set("free_test_enabled", "0" if enabled == "1" else "1")
+        log_admin_action(uid, f"تست رایگان {'غیرفعال' if enabled == '1' else 'فعال'} شد")
         bot.answer_callback_query(call.id, "تغییر یافت.")
         _fake_call(call, "adm:set:freetest")
         return
@@ -5031,6 +5175,7 @@ def _dispatch_callback(call, uid, data):
     if data == "adm:rules:toggle":
         enabled = setting_get("purchase_rules_enabled", "0")
         setting_set("purchase_rules_enabled", "0" if enabled == "1" else "1")
+        log_admin_action(uid, f"قوانین خرید {'غیرفعال' if enabled == '1' else 'فعال'} شد")
         bot.answer_callback_query(call.id, "تغییر یافت.")
         _fake_call(call, "adm:set:rules")
         return
@@ -5093,8 +5238,14 @@ def _dispatch_callback(call, uid, data):
             bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
             return
         pin_id = int(data.split(":")[3])
+        # Get pin text before deleting for log
+        _pin_row = get_pinned_message(pin_id)
+        _pin_text_preview = ""
+        if _pin_row:
+            _pin_text_preview = (_pin_row["text"] or "")[:200].strip()
         # Unpin and delete sent messages from all user chats
         sends = get_pinned_sends(pin_id)
+        removed_count = 0
         for s in sends:
             try:
                 bot.unpin_chat_message(s["user_id"], s["message_id"])
@@ -5102,11 +5253,18 @@ def _dispatch_callback(call, uid, data):
                 pass
             try:
                 bot.delete_message(s["user_id"], s["message_id"])
+                removed_count += 1
             except Exception:
                 pass
         delete_pinned_sends(pin_id)
         delete_pinned_message(pin_id)
+        log_admin_action(uid, f"پیام پین #{pin_id} حذف شد")
         bot.answer_callback_query(call.id, "🗑 پیام حذف و آنپین شد.")
+        send_to_topic("broadcast_report",
+            f"🗑 <b>حذف پیام پین</b>\n\n"
+            f"👤 حذف‌کننده: <code>{uid}</code>\n"
+            f"🗑 حذف شده از: <b>{removed_count}</b> کاربر\n\n"
+            f"📝 <b>متن پیام:</b>\n{esc(_pin_text_preview) if _pin_text_preview else '(خالی)'}")
         _fake_call(call, "adm:pin")
         return
 
@@ -5158,6 +5316,7 @@ def _dispatch_callback(call, uid, data):
     if data == "adm:bkp:toggle":
         enabled = setting_get("backup_enabled", "0")
         setting_set("backup_enabled", "0" if enabled == "1" else "1")
+        log_admin_action(uid, f"بکاپ خودکار {'غیرفعال' if enabled == '1' else 'فعال'} شد")
         bot.answer_callback_query(call.id, "تغییر یافت.")
         _fake_call(call, "admin:backup")
         return
@@ -5384,6 +5543,7 @@ def _dispatch_callback(call, uid, data):
             return
         delete_panel_package(pp_id)
         bot.answer_callback_query(call.id, "✅ Package deleted.")
+        log_admin_action(uid, f"پکیج پنل #{pp_id} از پنل #{pp['panel_id']} حذف شد")
         _show_panel_packages(call, pp["panel_id"])
         return
 
@@ -5418,6 +5578,7 @@ def _dispatch_callback(call, uid, data):
         panel_id = int(parts[3])
         new_val  = int(parts[4])
         update_panel_field(panel_id, "is_active", new_val)
+        log_admin_action(uid, f"پنل #{panel_id} {'فعال' if new_val else 'غیرفعال'} شد")
         bot.answer_callback_query(call.id, "✅ Updated.")
         _show_panel_edit(call, panel_id)
         return
@@ -5449,6 +5610,7 @@ def _dispatch_callback(call, uid, data):
         panel_id = int(data.split(":")[3])
         delete_panel(panel_id)
         bot.answer_callback_query(call.id, "✅ Panel deleted.")
+        log_admin_action(uid, f"پنل #{panel_id} حذف شد")
         _show_admin_panels(call)
         return
 
@@ -5483,6 +5645,7 @@ def _dispatch_callback(call, uid, data):
             return
         new_val = data.split(":")[3]
         setting_set("worker_api_enabled", new_val)
+        log_admin_action(uid, f"Worker API {'فعال' if new_val == '1' else 'غیرفعال'} شد")
         bot.answer_callback_query(call.id, "✅ Updated.")
         _fake_call(call, "adm:panel:api_settings")
         return

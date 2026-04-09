@@ -19,7 +19,11 @@ TOPICS = [
     ("renewal_log",      "🔄 لاگ تمدید"),
     ("wallet_log",       "💰 لاگ کیف‌پول"),
     ("test_report",      "🧪 گزارش تست"),
-    ("broadcast_report", "📢 اطلاع‌رسانی"),
+    ("broadcast_report", "📢 اطلاع‌رسانی و پین"),
+    ("referral_log",     "🔗 لاگ زیرمجموعه‌گیری"),
+    ("agency_request",   "🤝 درخواست نمایندگی"),
+    ("agency_log",       "🏢 لاگ نمایندگان"),
+    ("admin_ops_log",    "📝 لاگ عملیاتی"),
     ("error_log",        "❌ گزارش خطا"),
 ]
 
@@ -106,26 +110,39 @@ def ensure_group_topics():
 
 
 def reset_and_recreate_topics():
-    """Clear all stored topic IDs then recreate them all."""
-    for key, _ in TOPICS:
-        setting_set(_SETTING_KEY[key], "")
+    """Validate existing topics (remove broken ones), then create any missing ones."""
+    group_id = get_group_id()
+    if group_id:
+        for key, name in TOPICS:
+            tid = _get_topic_id(key)
+            if not tid:
+                continue
+            # Try a no-op edit to confirm the topic still exists in Telegram
+            try:
+                bot.edit_forum_topic(group_id, tid, name=name)
+            except Exception as e:
+                err = str(e)
+                if any(x in err for x in ("TOPIC_DELETED", "TOPIC_ID_INVALID",
+                                           "not found", "thread", "MESSAGE_THREAD")):
+                    setting_set(_SETTING_KEY[key], "")
+                # For other errors (e.g. permissions) keep the stored ID
     return ensure_group_topics()
 
 
 # ── Send helpers ───────────────────────────────────────────────────────────────
 def send_to_topic(topic_key, text, parse_mode="HTML", reply_markup=None):
-    """Send a text message to the specified topic. Silent on any error."""
+    """Send a text message to the specified topic. Returns Message or None."""
     # Check if this notification type is enabled for group
     if setting_get(f"notif_grp_{topic_key}", "1") != "1":
-        return
+        return None
     group_id = get_group_id()
     if not group_id:
-        return
+        return None
     thread_id = _get_topic_id(topic_key)
     if not thread_id:
-        return
+        return None
     try:
-        bot.send_message(
+        return bot.send_message(
             group_id, text,
             message_thread_id=thread_id,
             parse_mode=parse_mode,
@@ -133,7 +150,7 @@ def send_to_topic(topic_key, text, parse_mode="HTML", reply_markup=None):
             disable_web_page_preview=True,
         )
     except Exception:
-        pass
+        return None
 
 
 def send_photo_to_topic(topic_key, photo, caption=None):
@@ -152,7 +169,7 @@ def send_photo_to_topic(topic_key, photo, caption=None):
         pass
 
 
-def send_document_to_topic(topic_key, document, caption=None):
+def send_document_to_topic(topic_key, document, caption=None, visible_file_name=None):
     """Send a document to the specified topic. Silent on any error."""
     group_id = get_group_id()
     if not group_id:
@@ -161,11 +178,26 @@ def send_document_to_topic(topic_key, document, caption=None):
     if not thread_id:
         return
     try:
-        bot.send_document(group_id, document,
-                          message_thread_id=thread_id,
-                          caption=caption, parse_mode="HTML")
+        kwargs = dict(
+            message_thread_id=thread_id,
+            caption=caption,
+            parse_mode="HTML",
+        )
+        if visible_file_name:
+            kwargs["visible_file_name"] = visible_file_name
+        bot.send_document(group_id, document, **kwargs)
     except Exception:
         pass
+
+
+# ── Admin operation log helper ─────────────────────────────────────────────────
+def log_admin_action(admin_id, action_text):
+    """Log an admin operation to the admin_ops_log topic."""
+    send_to_topic("admin_ops_log",
+        f"📝 <b>عملیات مدیریتی</b>\n\n"
+        f"👤 اجراکننده: <code>{admin_id}</code>\n"
+        f"📌 عملیات: {action_text}"
+    )
 
 
 # ── Background loop ────────────────────────────────────────────────────────────

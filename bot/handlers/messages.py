@@ -33,6 +33,7 @@ from ..db import (
     notify_first_start_if_needed, update_config_field,
     add_pinned_message, update_pinned_message,
     save_pinned_send, get_pinned_sends,
+    save_agency_request_message,
 )
 from ..gateways.base import is_gateway_available, is_card_info_complete
 from ..gateways.tetrapay import create_tetrapay_order, verify_tetrapay_order
@@ -48,6 +49,7 @@ from ..payments import (
     show_crypto_selection, show_crypto_payment_info,
     send_payment_to_admins, finish_card_payment_approval,
 )
+from ..group_manager import send_to_topic, get_group_id, log_admin_action
 from ..admin.renderers import (
     _show_admin_types, _show_admin_stock, _show_admin_admins_panel,
     _show_perm_selection, _show_admin_users_list, _show_admin_user_detail,
@@ -116,7 +118,12 @@ def universal_handler(message):
             state_clear(uid)
             bot.send_message(uid, f"✅ پیام برای {sent} کاربر ارسال شد.", reply_markup=kb_admin_panel())
             from ..group_manager import send_to_topic as _stt
-            _stt("broadcast_report", f"📢 <b>اطلاع‌رسانی (همه کاربران)</b>\n\n✅ برای {sent} کاربر ارسال شد.")
+            _bc_preview = (message.text or message.caption or "")[:200].strip()
+            _stt("broadcast_report",
+                f"📢 <b>اطلاع‌رسانی (همه کاربران)</b>\n\n"
+                f"👤 ارسال‌کننده: <code>{uid}</code>\n"
+                f"📤 ارسال شده: <b>{sent}</b> کاربر\n\n"
+                f"📝 <b>متن پیام:</b>\n{esc(_bc_preview) if _bc_preview else '(فایل/مدیا)'}")
             return
 
         if sn == "admin_broadcast_customers" and is_admin(uid):
@@ -131,7 +138,12 @@ def universal_handler(message):
             state_clear(uid)
             bot.send_message(uid, f"✅ پیام برای {sent} مشتری ارسال شد.", reply_markup=kb_admin_panel())
             from ..group_manager import send_to_topic as _stt
-            _stt("broadcast_report", f"📢 <b>اطلاع‌رسانی (مشتریان)</b>\n\n✅ برای {sent} مشتری ارسال شد.")
+            _bc_preview = (message.text or message.caption or "")[:200].strip()
+            _stt("broadcast_report",
+                f"📢 <b>اطلاع‌رسانی (مشتریان)</b>\n\n"
+                f"👤 ارسال‌کننده: <code>{uid}</code>\n"
+                f"📤 ارسال شده: <b>{sent}</b> مشتری\n\n"
+                f"📝 <b>متن پیام:</b>\n{esc(_bc_preview) if _bc_preview else '(فایل/مدیا)'}")
             return
 
         if sn == "admin_broadcast_normal" and is_admin(uid):
@@ -154,7 +166,12 @@ def universal_handler(message):
             state_clear(uid)
             bot.send_message(uid, f"✅ پیام برای {sent} مشتری عادی ارسال شد.", reply_markup=kb_admin_panel())
             from ..group_manager import send_to_topic as _stt
-            _stt("broadcast_report", f"📢 <b>اطلاع‌رسانی (مشتریان عادی)</b>\n\n✅ برای {sent} کاربر ارسال شد.")
+            _bc_preview = (message.text or message.caption or "")[:200].strip()
+            _stt("broadcast_report",
+                f"📢 <b>اطلاع‌رسانی (مشتریان عادی)</b>\n\n"
+                f"👤 ارسال‌کننده: <code>{uid}</code>\n"
+                f"📤 ارسال شده: <b>{sent}</b> کاربر\n\n"
+                f"📝 <b>متن پیام:</b>\n{esc(_bc_preview) if _bc_preview else '(فایل/مدیا)'}")
             return
 
         if sn == "admin_broadcast_agents" and is_admin(uid):
@@ -171,7 +188,12 @@ def universal_handler(message):
             state_clear(uid)
             bot.send_message(uid, f"✅ پیام برای {sent} نماینده ارسال شد.", reply_markup=kb_admin_panel())
             from ..group_manager import send_to_topic as _stt
-            _stt("broadcast_report", f"📢 <b>اطلاع‌رسانی (نمایندگان)</b>\n\n✅ برای {sent} نماینده ارسال شد.")
+            _bc_preview = (message.text or message.caption or "")[:200].strip()
+            _stt("broadcast_report",
+                f"📢 <b>اطلاع‌رسانی (نمایندگان)</b>\n\n"
+                f"👤 ارسال‌کننده: <code>{uid}</code>\n"
+                f"📤 ارسال شده: <b>{sent}</b> نماینده\n\n"
+                f"📝 <b>متن پیام:</b>\n{esc(_bc_preview) if _bc_preview else '(فایل/مدیا)'}")
             return
 
         if sn == "admin_broadcast_admins" and is_admin(uid):
@@ -196,7 +218,12 @@ def universal_handler(message):
             state_clear(uid)
             bot.send_message(uid, f"✅ پیام برای {sent} ادمین ارسال شد.", reply_markup=kb_admin_panel())
             from ..group_manager import send_to_topic as _stt
-            _stt("broadcast_report", f"📢 <b>اطلاع‌رسانی (ادمین‌ها)</b>\n\n✅ برای {sent} ادمین ارسال شد.")
+            _bc_preview = (message.text or message.caption or "")[:200].strip()
+            _stt("broadcast_report",
+                f"📢 <b>اطلاع‌رسانی (ادمین‌ها)</b>\n\n"
+                f"👤 ارسال‌کننده: <code>{uid}</code>\n"
+                f"📤 ارسال شده: <b>{sent}</b> ادمین\n\n"
+                f"📝 <b>متن پیام:</b>\n{esc(_bc_preview) if _bc_preview else '(فایل/مدیا)'}")
             return
 
         # ── Wallet amount ──────────────────────────────────────────────────────
@@ -294,6 +321,7 @@ def universal_handler(message):
             name = sd["type_name"]
             try:
                 add_type(name, desc)
+                log_admin_action(uid, f"نوع جدید '{name}' ثبت شد")
                 state_clear(uid)
                 bot.send_message(uid, "✅ نوع جدید ثبت شد.")
                 _show_admin_types(message)
@@ -308,6 +336,7 @@ def universal_handler(message):
                 bot.send_message(uid, "⚠️ نام معتبر وارد کنید.", reply_markup=back_button("admin:types"))
                 return
             update_type(sd["type_id"], new_name)
+            log_admin_action(uid, f"نوع #{sd['type_id']} به '{new_name}' ویرایش شد")
             state_clear(uid)
             bot.send_message(uid, "✅ نوع با موفقیت ویرایش شد.")
             _show_admin_types(message)
@@ -371,6 +400,7 @@ def universal_handler(message):
                 bot.send_message(uid, "⚠️ قیمت معتبر وارد کنید.", reply_markup=back_button("admin:types"))
                 return
             add_package(sd["type_id"], sd["package_name"], sd["volume"], sd["duration"], price)
+            log_admin_action(uid, f"پکیج '{sd['package_name']}' ثبت شد")
             state_clear(uid)
             vol_label = "حجم نامحدود" if sd["volume"] == 0 else fmt_vol(sd["volume"])
             dur_label = "زمان نامحدود" if sd["duration"] == 0 else f"{sd['duration']} روز"
@@ -408,6 +438,7 @@ def universal_handler(message):
                     bot.send_message(uid, "⚠️ مقدار عددی معتبر وارد کنید.", reply_markup=back_button("admin:types"))
                     return
                 update_package_field(package_id, db_field, val)
+            log_admin_action(uid, f"پکیج #{package_id} فیلد {field_key} ویرایش شد")
             state_clear(uid)
             package_row = get_package(package_id)
             if package_row:
@@ -440,6 +471,7 @@ def universal_handler(message):
                 bot.send_message(uid, "⚠️ نام نمی‌تواند خالی باشد.", reply_markup=back_button(f"adm:stk:edt:{sd['config_id']}"))
                 return
             update_config_field(sd["config_id"], "service_name", urllib.parse.quote(val))
+            log_admin_action(uid, f"نام سرویس کانفیگ #{sd['config_id']} تغییر کرد")
             state_clear(uid)
             bot.send_message(uid, f"✅ نام سرویس تغییر کرد:\n<b>{esc(val)}</b>",
                              reply_markup=back_button(f"adm:stk:cfg:{sd['config_id']}"))
@@ -451,6 +483,7 @@ def universal_handler(message):
                 bot.send_message(uid, "⚠️ متن کانفیگ نمی‌تواند خالی باشد.", reply_markup=back_button(f"adm:stk:edt:{sd['config_id']}"))
                 return
             update_config_field(sd["config_id"], "config_text", val)
+            log_admin_action(uid, f"متن کانفیگ #{sd['config_id']} بروزرسانی شد")
             state_clear(uid)
             bot.send_message(uid, "✅ متن کانفیگ بروزرسانی شد.",
                              reply_markup=back_button(f"adm:stk:cfg:{sd['config_id']}"))
@@ -459,6 +492,7 @@ def universal_handler(message):
         if sn == "admin_cfg_edit_inq" and is_admin(uid):
             val = (message.text or "").strip()
             update_config_field(sd["config_id"], "inquiry_link", "" if val == "-" else val)
+            log_admin_action(uid, f"لینک استعلام کانفیگ #{sd['config_id']} بروزرسانی شد")
             state_clear(uid)
             bot.send_message(uid, "✅ لینک استعلام بروزرسانی شد.",
                              reply_markup=back_button(f"adm:stk:cfg:{sd['config_id']}"))
@@ -492,6 +526,7 @@ def universal_handler(message):
             if inquiry_link == "-":
                 inquiry_link = ""
             add_config(sd["type_id"], sd["package_id"], sd["service_name"], sd["config_text"], inquiry_link)
+            log_admin_action(uid, f"کانفیگ '{sd['service_name']}' ثبت شد")
             state_clear(uid)
             bot.send_message(uid, "✅ کانفیگ با موفقیت ثبت شد.", reply_markup=kb_admin_panel())
             return
@@ -664,6 +699,8 @@ def universal_handler(message):
                     auto_fulfill_err = str(e)
 
             state_clear(uid)
+            if success_count > 0:
+                log_admin_action(uid, f"{success_count} کانفیگ دسته‌جمعی برای پکیج #{package_id} ثبت شد")
             result = f"✅ <b>{success_count}</b> کانفیگ با موفقیت ثبت شد."
             if success_names:
                 names_text = "\n".join(f"  • {esc(n)}" for n in success_names)
@@ -680,6 +717,7 @@ def universal_handler(message):
         # ── Admin: Settings ────────────────────────────────────────────────────
         if sn == "admin_set_support" and is_admin(uid):
             setting_set("support_username", (message.text or "").strip())
+            log_admin_action(uid, "آیدی پشتیبانی تغییر کرد")
             state_clear(uid)
             bot.send_message(uid, "✅ آیدی پشتیبانی ذخیره شد.", reply_markup=back_button("adm:set:support"))
             return
@@ -687,6 +725,7 @@ def universal_handler(message):
         if sn == "admin_set_support_link" and is_admin(uid):
             val = (message.text or "").strip()
             setting_set("support_link", "" if val == "-" else val)
+            log_admin_action(uid, "لینک پشتیبانی تغییر کرد")
             state_clear(uid)
             bot.send_message(uid, "✅ لینک پشتیبانی ذخیره شد.", reply_markup=back_button("adm:set:support"))
             return
@@ -694,6 +733,7 @@ def universal_handler(message):
         if sn == "admin_set_support_desc" and is_admin(uid):
             val = (message.text or "").strip()
             setting_set("support_link_desc", "" if val == "-" else val)
+            log_admin_action(uid, "توضیحات پشتیبانی تغییر کرد")
             state_clear(uid)
             bot.send_message(uid, "✅ توضیحات پشتیبانی ذخیره شد.", reply_markup=back_button("adm:set:support"))
             return
@@ -708,6 +748,7 @@ def universal_handler(message):
             else:
                 setting_set("referral_banner_text", (message.text or "").strip())
                 setting_set("referral_banner_photo", "")
+            log_admin_action(uid, "بنر اشتراک‌گذاری تنظیم شد")
             state_clear(uid)
             bot.send_message(uid, "✅ بنر اشتراک‌گذاری ذخیره شد.", reply_markup=back_button("adm:ref:settings"))
             return
@@ -718,6 +759,7 @@ def universal_handler(message):
                 bot.send_message(uid, "⚠️ عدد معتبر وارد کنید.", reply_markup=back_button("adm:ref:settings"))
                 return
             setting_set("referral_start_reward_count", str(count))
+            log_admin_action(uid, f"تعداد زیرمجموعه هدیه استارت: {count}")
             state_clear(uid)
             bot.send_message(uid, f"✅ تعداد زیرمجموعه برای هدیه استارت: {count}", reply_markup=back_button("adm:ref:settings"))
             return
@@ -728,6 +770,7 @@ def universal_handler(message):
                 bot.send_message(uid, "⚠️ مبلغ معتبر وارد کنید.", reply_markup=back_button("adm:ref:settings"))
                 return
             setting_set("referral_start_reward_amount", str(amount))
+            log_admin_action(uid, f"مبلغ هدیه استارت: {amount} تومان")
             state_clear(uid)
             bot.send_message(uid, f"✅ مبلغ هدیه استارت: {fmt_price(amount)} تومان", reply_markup=back_button("adm:ref:settings"))
             return
@@ -738,6 +781,7 @@ def universal_handler(message):
                 bot.send_message(uid, "⚠️ عدد معتبر وارد کنید.", reply_markup=back_button("adm:ref:settings"))
                 return
             setting_set("referral_purchase_reward_count", str(count))
+            log_admin_action(uid, f"تعداد خرید هدیه: {count}")
             state_clear(uid)
             bot.send_message(uid, f"✅ تعداد خرید برای هدیه: {count}", reply_markup=back_button("adm:ref:settings"))
             return
@@ -748,24 +792,28 @@ def universal_handler(message):
                 bot.send_message(uid, "⚠️ مبلغ معتبر وارد کنید.", reply_markup=back_button("adm:ref:settings"))
                 return
             setting_set("referral_purchase_reward_amount", str(amount))
+            log_admin_action(uid, f"مبلغ هدیه خرید: {amount} تومان")
             state_clear(uid)
             bot.send_message(uid, f"✅ مبلغ هدیه خرید: {fmt_price(amount)} تومان", reply_markup=back_button("adm:ref:settings"))
             return
 
         if sn == "admin_set_card" and is_admin(uid):
             setting_set("payment_card", normalize_text_number(message.text or ""))
+            log_admin_action(uid, "شماره کارت تغییر کرد")
             state_clear(uid)
             bot.send_message(uid, "✅ شماره کارت ذخیره شد.", reply_markup=back_button("adm:set:gw:card"))
             return
 
         if sn == "admin_set_bank" and is_admin(uid):
             setting_set("payment_bank", (message.text or "").strip())
+            log_admin_action(uid, "نام بانک تغییر کرد")
             state_clear(uid)
             bot.send_message(uid, "✅ نام بانک ذخیره شد.", reply_markup=back_button("adm:set:gw:card"))
             return
 
         if sn == "admin_set_owner" and is_admin(uid):
             setting_set("payment_owner", (message.text or "").strip())
+            log_admin_action(uid, "نام صاحب کارت تغییر کرد")
             state_clear(uid)
             bot.send_message(uid, "✅ نام صاحب کارت ذخیره شد.", reply_markup=back_button("adm:set:gw:card"))
             return
@@ -774,6 +822,7 @@ def universal_handler(message):
             coin_key = sd["coin_key"]
             val      = (message.text or "").strip()
             setting_set(f"crypto_{coin_key}", "" if val == "-" else val)
+            log_admin_action(uid, f"آدرس ولت {coin_key} تغییر کرد")
             state_clear(uid)
             bot.send_message(uid, "✅ آدرس ولت ذخیره شد.", reply_markup=back_button("adm:set:gw:crypto"))
             return
@@ -781,6 +830,7 @@ def universal_handler(message):
         if sn == "admin_set_tetrapay_key" and is_admin(uid):
             val = (message.text or "").strip()
             setting_set("tetrapay_api_key", val)
+            log_admin_action(uid, "کلید API تتراپی تغییر کرد")
             state_clear(uid)
             bot.send_message(uid, "✅ کلید API تتراپی ذخیره شد.", reply_markup=back_button("adm:set:gw:tetrapay"))
             return
@@ -788,6 +838,7 @@ def universal_handler(message):
         if sn == "admin_set_swapwallet_crypto_key" and is_admin(uid):
             val = (message.text or "").strip()
             setting_set("swapwallet_crypto_api_key", val)
+            log_admin_action(uid, "کلید API سواپ‌ولت کریپتو تغییر کرد")
             state_clear(uid)
             bot.send_message(uid, "✅ کلید API سواپ ولت (کریپتو) ذخیره شد.", reply_markup=back_button("adm:set:gw:swapwallet_crypto"))
             return
@@ -795,6 +846,7 @@ def universal_handler(message):
         if sn == "admin_set_swapwallet_crypto_username" and is_admin(uid):
             val = (message.text or "").strip()
             setting_set("swapwallet_crypto_username", "" if val == "-" else val)
+            log_admin_action(uid, "نام کاربری سواپ‌ولت کریپتو تغییر کرد")
             state_clear(uid)
             bot.send_message(uid, "✅ نام کاربری فروشگاه سواپ ولت (کریپتو) ذخیره شد.", reply_markup=back_button("adm:set:gw:swapwallet_crypto"))
             return
@@ -803,6 +855,7 @@ def universal_handler(message):
             gw = sd.get("gw", "")
             val = (message.text or "").strip()
             setting_set(f"gw_{gw}_display_name", "" if val == "-" else val)
+            log_admin_action(uid, f"نام نمایشی درگاه {gw} تغییر کرد")
             state_clear(uid)
             msg = "✅ نام نمایشی درگاه ذخیره شد." if val != "-" else "✅ نام نمایشی به پیش‌فرض بازگشت داده شد."
             bot.send_message(uid, msg, reply_markup=back_button(f"adm:set:gw:{gw}"))
@@ -811,6 +864,7 @@ def universal_handler(message):
         if sn == "admin_set_tronpays_rial_key" and is_admin(uid):
             val = (message.text or "").strip()
             setting_set("tronpays_rial_api_key", val)
+            log_admin_action(uid, "کلید API TronPays تغییر کرد")
             state_clear(uid)
             bot.send_message(uid, "✅ کلید API TronPays ذخیره شد.", reply_markup=back_button("adm:set:gw:tronpays_rial"))
             return
@@ -821,6 +875,7 @@ def universal_handler(message):
                 bot.send_message(uid, "⚠️ URL باید با <code>https://</code> یا <code>http://</code> شروع شود:", reply_markup=back_button("adm:set:gw:tronpays_rial"))
                 return
             setting_set("tronpays_rial_callback_url", val)
+            log_admin_action(uid, "Callback URL TronPays تغییر کرد")
             state_clear(uid)
             bot.send_message(uid, f"✅ Callback URL ذخیره شد:\n<code>{val or 'https://example.com/'}</code>", reply_markup=back_button("adm:set:gw:tronpays_rial"))
             return
@@ -852,12 +907,14 @@ def universal_handler(message):
                 bot.send_message(uid, "⚠️ عدد معتبر وارد کنید یا <code>0</code> برای بدون حداکثر:", reply_markup=back_button(f"adm:gw:{gw}:range"))
                 return
             state_clear(uid)
+            log_admin_action(uid, f"بازه پرداختی درگاه {gw} تنظیم شد")
             bot.send_message(uid, "✅ بازه پرداختی ذخیره شد.", reply_markup=back_button(f"adm:gw:{gw}:range"))
             return
 
         if sn == "admin_set_channel" and is_admin(uid):
             val = (message.text or "").strip()
             setting_set("channel_id", "" if val == "-" else val)
+            log_admin_action(uid, "کانال تغییر کرد")
             state_clear(uid)
             bot.send_message(uid, "✅ کانال ذخیره شد.", reply_markup=back_button("admin:settings"))
             return
@@ -865,6 +922,7 @@ def universal_handler(message):
         if sn == "admin_set_start_text" and is_admin(uid):
             val = (message.text or "").strip()
             setting_set("start_text", "" if val == "-" else val)
+            log_admin_action(uid, "متن استارت تغییر کرد")
             state_clear(uid)
             bot.send_message(uid, "✅ متن استارت ذخیره شد.", reply_markup=back_button("admin:settings"))
             return
@@ -874,6 +932,7 @@ def universal_handler(message):
             val = (message.text or "").strip()
             if val == "0":
                 setting_set("agent_test_limit", "0")
+                log_admin_action(uid, "محدودیت تست همکاران غیرفعال شد")
                 state_clear(uid)
                 bot.send_message(uid, "✅ محدودیت تست همکاران غیرفعال شد.", reply_markup=back_button("adm:set:freetest"))
                 return
@@ -885,6 +944,7 @@ def universal_handler(message):
                 return
             setting_set("agent_test_limit", parts[0])
             setting_set("agent_test_period", parts[1])
+            log_admin_action(uid, f"محدودیت تست همکاران: {parts[0]} در {parts[1]}")
             state_clear(uid)
             period_labels = {"day": "روز", "week": "هفته", "month": "ماه"}
             bot.send_message(uid,
@@ -899,6 +959,7 @@ def universal_handler(message):
                 bot.send_message(uid, "⚠️ عدد معتبر وارد کنید.", reply_markup=back_button("admin:backup"))
                 return
             setting_set("backup_interval", str(val))
+            log_admin_action(uid, f"بازه بکاپ به {val} ساعت تنظیم شد")
             state_clear(uid)
             bot.send_message(uid, f"✅ بازه بکاپ به {val} ساعت تنظیم شد.", reply_markup=back_button("admin:backup"))
             return
@@ -906,6 +967,7 @@ def universal_handler(message):
         if sn == "admin_set_backup_target" and is_admin(uid):
             val = (message.text or "").strip()
             setting_set("backup_target_id", val)
+            log_admin_action(uid, "مقصد بکاپ تغییر کرد")
             state_clear(uid)
             bot.send_message(uid, "✅ مقصد بکاپ ذخیره شد.", reply_markup=back_button("admin:backup"))
             return
@@ -919,6 +981,7 @@ def universal_handler(message):
                     reply_markup=back_button("admin:group"))
                 return
             setting_set("group_id", val)
+            log_admin_action(uid, f"آیدی گروه به {val} تغییر کرد")
             state_clear(uid)
             bot.send_message(uid,
                 f"✅ آیدی گروه <code>{val}</code> ذخیره شد.\n\n"
@@ -1076,6 +1139,7 @@ def universal_handler(message):
                 "pct" if dtype == "pct" else "toman", val)
             state_clear(uid)
             label = f"{val}%" if dtype == "pct" else f"{fmt_price(val)} تومان"
+            log_admin_action(uid, f"تخفیف کل نماینده {target_user_id}: {label}")
             bot.send_message(uid,
                 f"✅ تخفیف کل محصولات: <b>{label}</b> تنظیم شد.",
                 reply_markup=kb_admin_panel())
@@ -1097,6 +1161,7 @@ def universal_handler(message):
                 "pct" if dtype == "pct" else "toman", val)
             state_clear(uid)
             label = f"{val}%" if dtype == "pct" else f"{fmt_price(val)} تومان"
+            log_admin_action(uid, f"تخفیف دسته #{type_id} نماینده {target_user_id}: {label}")
             bot.send_message(uid,
                 f"✅ تخفیف دسته #{type_id}: <b>{label}</b> تنظیم شد.",
                 reply_markup=kb_admin_panel())
@@ -1109,6 +1174,7 @@ def universal_handler(message):
                 bot.send_message(uid, "⚠️ عددی بین 0 تا 100 وارد کنید.")
                 return
             setting_set("agency_default_discount_pct", str(val))
+            log_admin_action(uid, f"تخفیف پیش‌فرض نمایندگی به {val}% تغییر یافت")
             state_clear(uid)
             bot.send_message(uid, f"✅ تخفیف پیش‌فرض نمایندگی به <b>{val}%</b> تغییر یافت.",
                              reply_markup=back_button("admin:settings"))
@@ -1279,12 +1345,35 @@ def universal_handler(message):
             )
             admin_kb = types.InlineKeyboardMarkup()
             admin_kb.row(
-                types.InlineKeyboardButton("✅ تأیید", callback_data=f"agency:approve:{uid}"),
-                types.InlineKeyboardButton("❌ رد", callback_data=f"agency:reject:{uid}"),
+                types.InlineKeyboardButton("✅ تأیید", callback_data=f"agency:approve_now:{uid}"),
+                types.InlineKeyboardButton("❌ رد", callback_data=f"agency:reject_now:{uid}"),
             )
             for admin_id in ADMIN_IDS:
                 try:
-                    bot.send_message(admin_id, text, reply_markup=admin_kb)
+                    from ..db import save_agency_request_message as _sarm
+                    msg = bot.send_message(admin_id, text, reply_markup=admin_kb)
+                    _sarm(uid, admin_id, msg.message_id)
+                except Exception:
+                    pass
+            for row in get_all_admin_users():
+                import json as _json
+                sub_id = row["user_id"]
+                if sub_id in ADMIN_IDS:
+                    continue
+                perms = _json.loads(row["permissions"] or "{}")
+                if not (perms.get("full") or perms.get("agency")):
+                    continue
+                try:
+                    from ..db import save_agency_request_message as _sarm
+                    msg = bot.send_message(sub_id, text, reply_markup=admin_kb)
+                    _sarm(uid, sub_id, msg.message_id)
+                except Exception:
+                    pass
+            grp_msg = send_to_topic("agency_request", text, reply_markup=admin_kb)
+            if grp_msg:
+                try:
+                    from ..db import save_agency_request_message as _sarm
+                    _sarm(uid, grp_msg.chat.id, grp_msg.message_id)
                 except Exception:
                     pass
             return
@@ -1337,6 +1426,7 @@ def universal_handler(message):
                 bot.send_message(uid, "⚠️ متن خالی مجاز نیست.", reply_markup=back_button("adm:set:rules"))
                 return
             setting_set("purchase_rules_text", text_val)
+            log_admin_action(uid, "متن قوانین خرید ویرایش شد")
             state_clear(uid)
             bot.send_message(uid, "✅ متن قوانین خرید ذخیره شد.", reply_markup=back_button("adm:set:rules"))
             return
@@ -1387,6 +1477,7 @@ def universal_handler(message):
                 bot.send_message(uid, "⚠️ Password cannot be empty."); return
             state_clear(uid)
             new_id = add_panel(sd["name"], sd["ip"], int(sd["port"]), sd["patch"], sd["username"], password)
+            log_admin_action(uid, f"پنل '{sd['name']}' (#{new_id}) ثبت شد")
             bot.send_message(uid,
                 f"✅ <b>Panel Registered!</b>\n\n"
                 f"🖥 Name: {esc(sd['name'])}\n"
@@ -1405,6 +1496,7 @@ def universal_handler(message):
                 bot.send_message(uid, "⚠️ متن پیام نمی‌تواند خالی باشد.")
                 return
             add_pinned_message(text)
+            log_admin_action(uid, "پیام پین جدید ارسال شد")
             state_clear(uid)
             # Broadcast to all users and pin in each chat
             from ..db import get_all_pinned_messages as _get_pins
@@ -1443,6 +1535,14 @@ def universal_handler(message):
                 f"✅ پیام پین ارسال شد.\n📤 فرستاده شده: {sent} کاربر\n📌 پین شده: {pinned} کاربر\n\n"
                 f"📌 <b>پیام‌های پین شده</b>\n\n{count_text}",
                 reply_markup=kb, parse_mode="HTML")
+            from ..group_manager import send_to_topic as _stt
+            _pin_preview = text[:200].strip()
+            _stt("broadcast_report",
+                f"📌 <b>پیام پین جدید</b>\n\n"
+                f"👤 ارسال‌کننده: <code>{uid}</code>\n"
+                f"📤 ارسال شده: <b>{sent}</b> کاربر\n"
+                f"📌 پین شده: <b>{pinned}</b> کاربر\n\n"
+                f"📝 <b>متن پیام:</b>\n{esc(_pin_preview)}")
             return
 
         if sn == "admin_pin_edit" and admin_has_perm(uid, "settings"):
@@ -1482,6 +1582,13 @@ def universal_handler(message):
                 f"✅ پیام پین ویرایش شد.\n✏️ آپدیت شده: {edited_count} کاربر\n\n"
                 f"📌 <b>پیام‌های پین شده</b>\n\n{count_text}",
                 reply_markup=kb, parse_mode="HTML")
+            from ..group_manager import send_to_topic as _stt
+            _pin_preview = text[:200].strip()
+            _stt("broadcast_report",
+                f"✏️ <b>ویرایش پیام پین</b>\n\n"
+                f"👤 ویرایش‌کننده: <code>{uid}</code>\n"
+                f"✏️ آپدیت شده: <b>{edited_count}</b> کاربر\n\n"
+                f"📝 <b>متن جدید:</b>\n{esc(_pin_preview)}")
             return
 
         # ── Panel: Add Traffic Package (multi-step) ────────────────────────────
@@ -1518,6 +1625,7 @@ def universal_handler(message):
             state_clear(uid)
             pp_id = add_panel_package(sd["panel_id"], sd["name"], int(sd["volume_gb"]),
                                       int(sd["duration_days"]), int(raw))
+            log_admin_action(uid, f"پکیج پنل '{sd['name']}' (#{pp_id}) ثبت شد")
             bot.send_message(uid,
                 f"✅ <b>Package Added!</b>\n\n"
                 f"📦 Name: {esc(sd['name'])}\n"
@@ -1538,6 +1646,7 @@ def universal_handler(message):
             if field == "port" and not value.isdigit():
                 bot.send_message(uid, "⚠️ Port must be numeric."); return
             update_panel_field(panel_id, field, int(value) if field == "port" else value)
+            log_admin_action(uid, f"فیلد {field} پنل #{panel_id} ویرایش شد")
             state_clear(uid)
             bot.send_message(uid, f"✅ Field <b>{field}</b> updated.", reply_markup=kb_admin_panel(uid))
             return
@@ -1548,6 +1657,7 @@ def universal_handler(message):
             if len(key) < 16 or not re.fullmatch(r"[A-Za-z0-9_\-]+", key):
                 bot.send_message(uid, "⚠️ API key must be at least 16 alphanumeric characters."); return
             setting_set("worker_api_key", key)
+            log_admin_action(uid, "Worker API key تغییر کرد")
             state_clear(uid)
             bot.send_message(uid, f"✅ Worker API key saved.\n\n🔑 <code>{esc(key)}</code>",
                              reply_markup=kb_admin_panel(uid))
@@ -1559,6 +1669,7 @@ def universal_handler(message):
             if not raw.isdigit() or not (1 <= int(raw) <= 65535):
                 bot.send_message(uid, "⚠️ Enter a valid port number (1-65535)."); return
             setting_set("worker_api_port", raw)
+            log_admin_action(uid, f"API port به {raw} تغییر کرد")
             state_clear(uid)
             bot.send_message(uid, f"✅ API port set to <b>{raw}</b>.", reply_markup=kb_admin_panel(uid))
             return

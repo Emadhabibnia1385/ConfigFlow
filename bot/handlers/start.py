@@ -24,9 +24,13 @@ def start_handler(message):
                 referrer_id = int(parts[1][4:])
                 if referrer_id != uid:
                     add_referral(referrer_id, uid)
-                    # Check & give start reward
-                    from ..ui.notifications import check_and_give_referral_start_reward
+                    # Check & give start reward, then log the join
+                    from ..ui.notifications import check_and_give_referral_start_reward, notify_referral_join
                     check_and_give_referral_start_reward(referrer_id)
+                    try:
+                        notify_referral_join(referrer_id, uid)
+                    except Exception:
+                        pass
             except (ValueError, Exception):
                 pass
 

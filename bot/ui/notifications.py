@@ -85,6 +85,10 @@ def deliver_purchase_message(chat_id, purchase_id):
             check_and_give_referral_purchase_reward(chat_id)
         except Exception:
             pass
+        try:
+            notify_referral_first_purchase(chat_id)
+        except Exception:
+            pass
 
 
 # ── Admin notifications ────────────────────────────────────────────────────────
@@ -119,6 +123,9 @@ def admin_purchase_notify(method_label, user_row, package_row):
             except Exception:
                 pass
     send_to_topic("purchase_log", text)
+    # If the buyer is an agent, also mirror to agency_log
+    if user_row.get("is_agent"):
+        send_to_topic("agency_log", text)
 
 
 def admin_renewal_notify(user_id, purchase_item, package_row, amount, method_label):
@@ -160,6 +167,9 @@ def admin_renewal_notify(user_id, purchase_item, package_row, amount, method_lab
             except Exception:
                 pass
     send_to_topic("renewal_request", text, reply_markup=kb)
+    # If the user is an agent, also mirror to agency_log
+    if user_row and user_row.get("is_agent"):
+        send_to_topic("agency_log", text, reply_markup=kb)
 
 
 def notify_pending_order_to_admins(pending_id, user_id, package_row, amount, method):
@@ -346,6 +356,92 @@ def _give_referral_reward(referrer_id, reward_prefix):
             deliver_purchase_message(referrer_id, purchase_id)
         except Exception:
             pass
+
+
+def notify_referral_join(referrer_id, referee_id):
+    """Send a join-referral log to admins (own/bot) and the referral_log topic."""
+    referrer = get_user(referrer_id)
+    referee  = get_user(referee_id)
+    if not referrer or not referee:
+        return
+    total = count_referrals(referrer_id)
+    text = (
+        f"🔗 <b>زیرمجموعه‌گیری جدید</b>\n\n"
+        f"👤 <b>دعوت‌کننده:</b>\n"
+        f"▫️ نام: {esc(referrer['full_name'])}\n"
+        f"⚡️ نام کاربری: {esc(referrer['username'] or 'ندارد')}\n"
+        f"🆔 آیدی: <code>{referrer_id}</code>\n"
+        f"👥 کل زیرمجموعه‌ها: <b>{total}</b>\n\n"
+        f"🆕 <b>کاربر جدید (زیرمجموعه):</b>\n"
+        f"▫️ نام: {esc(referee['full_name'])}\n"
+        f"⚡️ نام کاربری: {esc(referee['username'] or 'ندارد')}\n"
+        f"🆔 آیدی: <code>{referee_id}</code>"
+    )
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton("👤 دعوت‌کننده", url=f"tg://user?id={referrer_id}"),
+        types.InlineKeyboardButton("🆕 زیرمجموعه",  url=f"tg://user?id={referee_id}"),
+    )
+    if _own_notif_on("referral_log"):
+        for admin_id in ADMIN_IDS:
+            try:
+                bot.send_message(admin_id, text, parse_mode="HTML", reply_markup=kb)
+            except Exception:
+                pass
+    if _bot_notif_on("referral_log"):
+        for row in get_all_admin_users():
+            sub_id = row["user_id"]
+            if sub_id in ADMIN_IDS:
+                continue
+            try:
+                bot.send_message(sub_id, text, parse_mode="HTML", reply_markup=kb)
+            except Exception:
+                pass
+    send_to_topic("referral_log", text, reply_markup=kb)
+
+
+def notify_referral_first_purchase(referee_id):
+    """Called after a purchase. If buyer was referred, log the event to referral_log."""
+    ref = get_referral_by_referee(referee_id)
+    if not ref:
+        return
+    referrer_id = ref["referrer_id"]
+    referrer = get_user(referrer_id)
+    referee  = get_user(referee_id)
+    if not referrer or not referee:
+        return
+    text = (
+        f"🛍 <b>اولین خرید زیرمجموعه</b>\n\n"
+        f"👤 <b>دعوت‌کننده:</b>\n"
+        f"▫️ نام: {esc(referrer['full_name'])}\n"
+        f"⚡️ نام کاربری: {esc(referrer['username'] or 'ندارد')}\n"
+        f"🆔 آیدی: <code>{referrer_id}</code>\n\n"
+        f"🛒 <b>خریدار (زیرمجموعه):</b>\n"
+        f"▫️ نام: {esc(referee['full_name'])}\n"
+        f"⚡️ نام کاربری: {esc(referee['username'] or 'ندارد')}\n"
+        f"🆔 آیدی: <code>{referee_id}</code>"
+    )
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton("👤 دعوت‌کننده", url=f"tg://user?id={referrer_id}"),
+        types.InlineKeyboardButton("🛒 خریدار",      url=f"tg://user?id={referee_id}"),
+    )
+    if _own_notif_on("referral_log"):
+        for admin_id in ADMIN_IDS:
+            try:
+                bot.send_message(admin_id, text, parse_mode="HTML", reply_markup=kb)
+            except Exception:
+                pass
+    if _bot_notif_on("referral_log"):
+        for row in get_all_admin_users():
+            sub_id = row["user_id"]
+            if sub_id in ADMIN_IDS:
+                continue
+            try:
+                bot.send_message(sub_id, text, parse_mode="HTML", reply_markup=kb)
+            except Exception:
+                pass
+    send_to_topic("referral_log", text, reply_markup=kb)
 
 
 def check_and_give_referral_start_reward(referrer_id):

@@ -287,6 +287,8 @@ def init_db():
             "CREATE TABLE IF NOT EXISTS pinned_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, created_at TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS pinned_message_sends (id INTEGER PRIMARY KEY AUTOINCREMENT, pin_id INTEGER NOT NULL, user_id INTEGER NOT NULL, message_id INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS referrals (id INTEGER PRIMARY KEY AUTOINCREMENT, referrer_id INTEGER NOT NULL, referee_id INTEGER NOT NULL UNIQUE, created_at TEXT NOT NULL, start_reward_given INTEGER NOT NULL DEFAULT 0, purchase_reward_given INTEGER NOT NULL DEFAULT 0)",
+            "CREATE TABLE IF NOT EXISTS agency_request_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, referee_uid INTEGER NOT NULL, chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS payment_admin_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, payment_id INTEGER NOT NULL, admin_id INTEGER NOT NULL, message_id INTEGER NOT NULL)",
         ]
         for sql in migrations:
             try:
@@ -1282,6 +1284,54 @@ def count_referrals(referrer_id):
         return conn.execute(
             "SELECT COUNT(*) AS n FROM referrals WHERE referrer_id=?", (referrer_id,)
         ).fetchone()["n"]
+
+
+# ── Agency request message tracking ───────────────────────────────────────────────
+def save_agency_request_message(referee_uid, chat_id, message_id):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO agency_request_messages (referee_uid, chat_id, message_id) VALUES (?,?,?)",
+            (referee_uid, chat_id, message_id),
+        )
+
+
+def get_agency_request_messages(referee_uid):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT chat_id, message_id FROM agency_request_messages WHERE referee_uid=?",
+            (referee_uid,),
+        ).fetchall()
+
+
+def delete_agency_request_messages(referee_uid):
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM agency_request_messages WHERE referee_uid=?", (referee_uid,)
+        )
+
+
+# ── Payment admin message tracking ────────────────────────────────────────────
+def save_payment_admin_message(payment_id, admin_id, message_id):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO payment_admin_messages (payment_id, admin_id, message_id) VALUES (?,?,?)",
+            (payment_id, admin_id, message_id),
+        )
+
+
+def get_payment_admin_messages(payment_id):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT admin_id, message_id FROM payment_admin_messages WHERE payment_id=?",
+            (payment_id,),
+        ).fetchall()
+
+
+def delete_payment_admin_messages(payment_id):
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM payment_admin_messages WHERE payment_id=?", (payment_id,)
+        )
 
 
 def count_referee_first_purchases(referrer_id):
