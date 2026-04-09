@@ -209,52 +209,90 @@ def _render_bulk_page(call, uid):
     send_or_edit(call, heading, kb)
 
 
+# ── Per-user callback serialisation ──────────────────────────────────────────
+# Prevents a user from triggering the same handler multiple times concurrently
+# by rapid-clicking.  Only one callback per user is processed at a time;
+# additional clicks while the lock is held are silently answered and dropped.
+_USER_CB_LOCKS: dict = {}
+_USER_CB_LOCKS_MUTEX = threading.Lock()
+
+def _get_user_cb_lock(uid: int) -> threading.Lock:
+    with _USER_CB_LOCKS_MUTEX:
+        if uid not in _USER_CB_LOCKS:
+            _USER_CB_LOCKS[uid] = threading.Lock()
+        return _USER_CB_LOCKS[uid]
+
+# Callbacks that are purely visual / informational and need no deduplication.
+_PASSTHROUGH_CALLBACKS = frozenset({"noop", "check_channel"})
+
+
 @bot.callback_query_handler(func=lambda c: True)
 def on_callback(call):
     uid  = call.from_user.id
-    ensure_user(call.from_user)
     data = call.data or ""
 
-    # Channel check button
-    if data == "check_channel":
-        if check_channel_membership(uid):
-            bot.answer_callback_query(call.id, "✅ عضویت تأیید شد!")
-            show_main_menu(call)
+    # Fast-path: purely informational callbacks bypass the lock entirely.
+    if data in _PASSTHROUGH_CALLBACKS:
+        if data == "check_channel":
+            ensure_user(call.from_user)
+            if check_channel_membership(uid):
+                bot.answer_callback_query(call.id, "✅ عضویت تأیید شد!")
+                show_main_menu(call)
+            else:
+                bot.answer_callback_query(call.id, "❌ هنوز عضو کانال نشده‌اید.", show_alert=True)
         else:
-            bot.answer_callback_query(call.id, "❌ هنوز عضو کانال نشده‌اید.", show_alert=True)
-        return
-
-    if not check_channel_membership(uid):
-        bot.answer_callback_query(call.id)
-        channel_lock_message(call)
-        return
-
-    # Restricted user check (admins bypass)
-    if not is_admin(uid):
-        _u = get_user(uid)
-        if _u and _u["status"] == "restricted":
-            bot.answer_callback_query(
-                call.id,
-                "🚫 شما از ربات محدود شده‌اید و نمی‌توانید از آن استفاده کنید.",
-                show_alert=True
-            )
-            return
-
-    try:
-        _dispatch_callback(call, uid, data)
-    except Exception as e:
-        import traceback as _tb
-        err_detail = _tb.format_exc()
-        print("CALLBACK_ERROR:", e)
-        print(err_detail)
-        try:
-            short = str(e)[:120]
-            bot.answer_callback_query(call.id, f"⚠️ خطا: {short}", show_alert=True)
-        except Exception:
             try:
-                bot.answer_callback_query(call.id, "خطایی رخ داد.", show_alert=True)
+                bot.answer_callback_query(call.id)
             except Exception:
                 pass
+        return
+
+    # Acquire per-user lock (non-blocking).
+    # If another callback for this user is already being processed, drop this one.
+    lock = _get_user_cb_lock(uid)
+    if not lock.acquire(blocking=False):
+        try:
+            bot.answer_callback_query(call.id, "⏳ لطفاً صبر کنید...", show_alert=False)
+        except Exception:
+            pass
+        return
+
+    try:
+        ensure_user(call.from_user)
+
+        if not check_channel_membership(uid):
+            bot.answer_callback_query(call.id)
+            channel_lock_message(call)
+            return
+
+        # Restricted user check (admins bypass)
+        if not is_admin(uid):
+            _u = get_user(uid)
+            if _u and _u["status"] == "restricted":
+                bot.answer_callback_query(
+                    call.id,
+                    "🚫 شما از ربات محدود شده‌اید و نمی‌توانید از آن استفاده کنید.",
+                    show_alert=True
+                )
+                return
+
+        try:
+            _dispatch_callback(call, uid, data)
+        except Exception as e:
+            import traceback as _tb
+            err_detail = _tb.format_exc()
+            print("CALLBACK_ERROR:", e)
+            print(err_detail)
+            try:
+                short = str(e)[:120]
+                bot.answer_callback_query(call.id, f"⚠️ خطا: {short}", show_alert=True)
+            except Exception:
+                try:
+                    bot.answer_callback_query(call.id, "خطایی رخ داد.", show_alert=True)
+                except Exception:
+                    pass
+    finally:
+        lock.release()
 
 
 def _swapwallet_error_inline(call, err_msg):
