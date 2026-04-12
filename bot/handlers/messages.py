@@ -16,7 +16,7 @@ from ..db import (
     setting_get, setting_set,
     ensure_user, get_user, get_users, set_user_status,
     set_user_agent, update_balance, get_user_purchases, get_purchase,
-    get_all_types, get_packages, get_package, add_package, update_package_field, delete_package,
+    get_all_types, get_active_types, get_packages, get_package, add_package, update_package_field, delete_package,
     add_type, update_type, update_type_description, delete_type,
     get_registered_packages_stock, get_configs_paginated, count_configs,
     expire_config, add_config,
@@ -34,6 +34,9 @@ from ..db import (
     add_pinned_message, update_pinned_message,
     save_pinned_send, get_pinned_sends,
     save_agency_request_message,
+    get_discount_code, add_discount_code, update_discount_code_field,
+    validate_discount_code, record_discount_usage,
+    add_voucher_batch, get_voucher_code_by_code, redeem_voucher_code,
 )
 from ..gateways.base import is_gateway_available, is_card_info_complete, get_global_amount_range, get_gateway_range_text, is_gateway_in_range, build_gateway_range_guide
 from ..gateways.tetrapay import create_tetrapay_order, verify_tetrapay_order
@@ -56,6 +59,45 @@ from ..admin.renderers import (
     _show_admin_user_detail_msg, _show_admin_assign_config_type, _fake_call,
     _show_admin_panels, _show_panel_packages, _show_panel_edit,
 )
+from .callbacks import (
+    _DISCOUNT_PROMPT_TEXT, _show_discount_prompt,
+    _show_purchase_gateways, _show_renewal_gateways, _show_wallet_gateways,
+    _render_discount_admin_list, _render_discount_code_detail,
+    _generate_voucher_codes, _render_voucher_admin_list, _render_voucher_batch_detail,
+)
+
+
+def _send_codes_to_admin(admin_id, header, code_lines, chunk_size=3600):
+    """Send header + list of code lines to admin, splitting at chunk_size if needed."""
+    all_text = header + "\n".join(code_lines)
+    if len(all_text) <= chunk_size:
+        try:
+            bot.send_message(admin_id, all_text, parse_mode="HTML")
+        except Exception:
+            pass
+        return
+    # Send header first, then codes in chunks
+    try:
+        bot.send_message(admin_id, header, parse_mode="HTML")
+    except Exception:
+        pass
+    chunk = []
+    cur_len = 0
+    for line in code_lines:
+        if cur_len + len(line) + 1 > chunk_size:
+            try:
+                bot.send_message(admin_id, "\n".join(chunk), parse_mode="HTML")
+            except Exception:
+                pass
+            chunk, cur_len = [], 0
+        chunk.append(line)
+        cur_len += len(line) + 1
+    if chunk:
+        try:
+            bot.send_message(admin_id, "\n".join(chunk), parse_mode="HTML")
+        except Exception:
+            pass
+
 
 @bot.message_handler(content_types=["text", "photo", "document"])
 def universal_handler(message):
@@ -251,44 +293,76 @@ def universal_handler(message):
                     f"لطفاً مبلغی تا <b>{fmt_price(g_max)}</b> تومان وارد کنید.",
                     reply_markup=back_button("main"))
                 return
-            state_set(uid, "wallet_charge_method", amount=amount)
-            _gw_labels = []
-            kb = types.InlineKeyboardMarkup()
-            if is_gateway_available("card", uid) and is_card_info_complete():
-                _lbl = setting_get("gw_card_display_name", "").strip() or "💳 کارت به کارت"
-                kb.add(types.InlineKeyboardButton(_lbl, callback_data="wallet:charge:card"))
-                _gw_labels.append(("card", _lbl))
-            if is_gateway_available("crypto", uid):
-                _lbl = setting_get("gw_crypto_display_name", "").strip() or "💎 ارز دیجیتال"
-                kb.add(types.InlineKeyboardButton(_lbl, callback_data="wallet:charge:crypto"))
-                _gw_labels.append(("crypto", _lbl))
-            if is_gateway_available("tetrapay", uid):
-                _lbl = setting_get("gw_tetrapay_display_name", "").strip() or "💳 درگاه کارت به کارت (TetraPay)"
-                kb.add(types.InlineKeyboardButton(_lbl, callback_data="wallet:charge:tetrapay"))
-                _gw_labels.append(("tetrapay", _lbl))
-            if is_gateway_available("swapwallet_crypto", uid):
-                _lbl = setting_get("gw_swapwallet_crypto_display_name", "").strip() or "💳 درگاه کارت به کارت و ارز دیجیتال (SwapWallet)"
-                kb.add(types.InlineKeyboardButton(_lbl, callback_data="wallet:charge:swapwallet_crypto"))
-                _gw_labels.append(("swapwallet_crypto", _lbl))
-            if is_gateway_available("tronpays_rial", uid):
-                _lbl = setting_get("gw_tronpays_rial_display_name", "").strip() or "💳 درگاه کارت به کارت (TronsPay)"
-                kb.add(types.InlineKeyboardButton(_lbl, callback_data="wallet:charge:tronpays_rial"))
-                _gw_labels.append(("tronpays_rial", _lbl))
-            kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="nav:main"))
-            _range_guide = build_gateway_range_guide(_gw_labels)
-            _charge_text = (
-                f"💰 مبلغ <b>{fmt_price(amount)}</b> تومان ثبت شد.\n\n"
-                + (_range_guide + "\n\n" if _range_guide else "")
-                + "روش پرداخت را انتخاب کنید:"
+            state_set(uid, "wallet_charge_method", amount=amount, original_amount=amount)
+            if setting_get("discount_codes_enabled", "0") == "1":
+                _show_discount_prompt(message, amount)
+                return
+            _show_wallet_gateways(message, uid, amount)
+            return
+
+        # ── Discount code entry ───────────────────────────────────────────────
+        if sn == "await_discount_code":
+            code = (message.text or message.caption or "").strip()
+            if not code:
+                bot.send_message(uid, "⚠️ کد تخفیف را وارد کنید.")
+                return
+            prev_state = sd.get("prev_state", "buy_select_method")
+            original_amount = int(sd.get("original_amount", sd.get("amount", 0)) or 0)
+            if original_amount <= 0:
+                state_clear(uid)
+                bot.send_message(uid, "⚠️ مبلغی برای اعمال تخفیف پیدا نشد.", reply_markup=kb_main(uid))
+                return
+            ok, row, disc_amount, final_amount, err = validate_discount_code(code, uid, original_amount)
+            if not ok:
+                kb = types.InlineKeyboardMarkup()
+                kb.add(types.InlineKeyboardButton("🔙 ادامه بدون تخفیف", callback_data="disc:no"))
+                bot.send_message(uid,
+                    f"{err}\n\nلطفاً دوباره تلاش کنید یا از دکمه زیر استفاده کنید.",
+                    reply_markup=kb)
+                return
+            record_discount_usage(row["id"], uid)
+            new_data = {k: v for k, v in sd.items() if k != "prev_state"}
+            new_data.update({
+                "amount": final_amount,
+                "original_amount": original_amount,
+                "discount_amount": disc_amount,
+                "discount_code_id": row["id"],
+                "discount_code": row["code"],
+            })
+            state_set(uid, prev_state, **new_data)
+            success_text = (
+                "✅ <b>کد تخفیف با موفقیت اعمال شد.</b>\n\n"
+                f"🎟 کد: <code>{esc(row['code'])}</code>\n"
+                f"💰 مبلغ اصلی: {fmt_price(original_amount)} تومان\n"
+                f"🏷 مبلغ تخفیف: {fmt_price(disc_amount)} تومان\n"
+                f"💚 مبلغ نهایی: {fmt_price(final_amount)} تومان"
             )
-            bot.send_message(uid, _charge_text, reply_markup=kb, parse_mode="HTML")
+            bot.send_message(uid, success_text, parse_mode="HTML")
+            if prev_state == "buy_select_method":
+                package_id = new_data.get("package_id")
+                package_row = get_package(package_id) if package_id else None
+                if package_row:
+                    _show_purchase_gateways(message, uid, package_id, final_amount, package_row)
+                return
+            if prev_state == "renew_select_method":
+                purchase_id = new_data.get("purchase_id")
+                package_id = new_data.get("package_id")
+                item = get_purchase(purchase_id) if purchase_id else None
+                package_row = get_package(package_id) if package_id else None
+                if item and package_row:
+                    _show_renewal_gateways(message, uid, purchase_id, package_id, final_amount, package_row, item)
+                return
+            if prev_state == "wallet_charge_method":
+                _show_wallet_gateways(message, uid, final_amount)
+                return
+            bot.send_message(uid, "✅ تخفیف ثبت شد.", reply_markup=kb_main(uid))
             return
 
         # ── Wallet receipt ─────────────────────────────────────────────────────
         if sn == "await_wallet_receipt":
             payment_id  = sd.get("payment_id")
             file_id     = None
-            text_value  = message.text or ""
+            text_value  = (message.caption or message.text or "").strip()
             if message.photo:
                 file_id = message.photo[-1].file_id
             elif message.document:
@@ -297,14 +371,17 @@ def universal_handler(message):
             state_clear(uid)
             bot.send_message(uid, "✅ رسید شما ارسال شد. لطفاً تا تأیید ادمین صبر کنید.",
                              reply_markup=kb_main(uid))
-            send_payment_to_admins(payment_id)
+            try:
+                send_payment_to_admins(payment_id)
+            except Exception as _e:
+                print(f"[wallet_receipt] send_payment_to_admins failed: {_e}")
             return
 
         # ── Purchase receipt ───────────────────────────────────────────────────
         if sn == "await_purchase_receipt":
             payment_id  = sd.get("payment_id")
             file_id     = None
-            text_value  = message.text or ""
+            text_value  = (message.caption or message.text or "").strip()
             if message.photo:
                 file_id = message.photo[-1].file_id
             elif message.document:
@@ -313,14 +390,17 @@ def universal_handler(message):
             state_clear(uid)
             bot.send_message(uid, "✅ رسید شما ارسال شد. لطفاً تا تأیید ادمین صبر کنید.",
                              reply_markup=kb_main(uid))
-            send_payment_to_admins(payment_id)
+            try:
+                send_payment_to_admins(payment_id)
+            except Exception as _e:
+                print(f"[purchase_receipt] send_payment_to_admins failed: {_e}")
             return
 
         # ── Renewal receipt ────────────────────────────────────────────────────
         if sn == "await_renewal_receipt":
             payment_id  = sd.get("payment_id")
             file_id     = None
-            text_value  = message.text or ""
+            text_value  = (message.caption or message.text or "").strip()
             if message.photo:
                 file_id = message.photo[-1].file_id
             elif message.document:
@@ -329,7 +409,300 @@ def universal_handler(message):
             state_clear(uid)
             bot.send_message(uid, "✅ رسید تمدید شما ارسال شد. لطفاً تا تأیید ادمین صبر کنید.",
                              reply_markup=kb_main(uid))
-            send_payment_to_admins(payment_id)
+            try:
+                send_payment_to_admins(payment_id)
+            except Exception as _e:
+                print(f"[renewal_receipt] send_payment_to_admins failed: {_e}")
+            return
+
+        # ── Admin: Discount codes ─────────────────────────────────────────────
+        if sn == "admin_discount_add_code" and is_admin(uid):
+            code = (message.text or "").strip().upper()
+            if not code:
+                bot.send_message(uid, "⚠️ متن کد تخفیف را وارد کنید.", reply_markup=back_button("admin:discounts"))
+                return
+            state_set(uid, "admin_discount_add_type", code=code)
+            kb = types.InlineKeyboardMarkup()
+            kb.row(
+                types.InlineKeyboardButton("٪ درصدی", callback_data="admin:disc:add_type:pct"),
+                types.InlineKeyboardButton("💰 مبلغ ثابت", callback_data="admin:disc:add_type:amount"),
+            )
+            kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:discounts"))
+            bot.send_message(uid,
+                f"🎟 کد: <code>{esc(code)}</code>\n\n"
+                "مرحله ۲/۴: نوع تخفیف را انتخاب کنید:",
+                reply_markup=kb)
+            return
+
+        if sn == "admin_discount_add_value" and is_admin(uid):
+            val = parse_int(message.text or "")
+            disc_type = sd.get("disc_type", "pct")
+            if val is None or val <= 0:
+                bot.send_message(uid, "⚠️ مقدار معتبر وارد کنید.")
+                return
+            if disc_type == "pct" and val > 100:
+                bot.send_message(uid, "⚠️ درصد باید بین 1 تا 100 باشد.")
+                return
+            state_set(uid, "admin_discount_add_total",
+                      code=sd.get("code", ""), disc_type=disc_type, discount_value=val)
+            bot.send_message(uid,
+                "مرحله ۳/۴: حداکثر تعداد استفاده کل را وارد کنید:\n"
+                "(۰ = نامحدود)",
+                reply_markup=back_button("admin:discounts"))
+            return
+
+        if sn == "admin_discount_add_total" and is_admin(uid):
+            total = parse_int(message.text or "")
+            if total is None or total < 0:
+                bot.send_message(uid, "⚠️ عدد معتبر وارد کنید. ۰ به معنی نامحدود است.")
+                return
+            state_set(uid, "admin_discount_add_per",
+                      code=sd.get("code", ""), disc_type=sd.get("disc_type", "pct"),
+                      discount_value=sd.get("discount_value", 0), max_uses_total=total)
+            bot.send_message(uid,
+                "مرحله ۴/۴: حداکثر تعداد استفاده هر کاربر را وارد کنید:\n"
+                "(۰ = نامحدود)",
+                reply_markup=back_button("admin:discounts"))
+            return
+
+        if sn == "admin_discount_add_per" and is_admin(uid):
+            per_user = parse_int(message.text or "")
+            if per_user is None or per_user < 0:
+                bot.send_message(uid, "⚠️ عدد معتبر وارد کنید. ۰ به معنی نامحدود است.")
+                return
+            try:
+                add_discount_code(
+                    sd.get("code", ""),
+                    sd.get("disc_type", "pct"),
+                    int(sd.get("discount_value", 0) or 0),
+                    int(sd.get("max_uses_total", 0) or 0),
+                    per_user,
+                )
+            except sqlite3.IntegrityError:
+                bot.send_message(uid, "⚠️ این کد قبلاً ثبت شده است.", reply_markup=back_button("admin:discounts"))
+                return
+            state_clear(uid)
+            log_admin_action(uid, f"کد تخفیف جدید {sd.get('code', '')} ساخته شد")
+            bot.send_message(uid, "✅ کد تخفیف با موفقیت ثبت شد.")
+            _render_discount_admin_list(message, uid)
+            return
+
+        if sn == "admin_discount_edit_code" and is_admin(uid):
+            code = (message.text or "").strip().upper()
+            if not code:
+                bot.send_message(uid, "⚠️ متن کد تخفیف نمی‌تواند خالی باشد.")
+                return
+            try:
+                update_discount_code_field(sd.get("edit_id"), "code", code)
+            except sqlite3.IntegrityError:
+                bot.send_message(uid, "⚠️ این کد قبلاً ثبت شده است.")
+                return
+            state_clear(uid)
+            log_admin_action(uid, f"کد تخفیف #{sd.get('edit_id')} ویرایش شد")
+            bot.send_message(uid, "✅ کد تخفیف ویرایش شد.")
+            _render_discount_code_detail(message, uid, sd.get("edit_id"))
+            return
+
+        if sn == "admin_discount_edit_val" and is_admin(uid):
+            code_id = sd.get("edit_id")
+            row = get_discount_code(code_id)
+            val = parse_int(message.text or "")
+            if val is None or val <= 0:
+                bot.send_message(uid, "⚠️ مقدار معتبر وارد کنید.")
+                return
+            if row and row["discount_type"] == "pct" and val > 100:
+                bot.send_message(uid, "⚠️ درصد باید بین 1 تا 100 باشد.")
+                return
+            update_discount_code_field(code_id, "discount_value", val)
+            state_clear(uid)
+            bot.send_message(uid, "✅ مقدار تخفیف ویرایش شد.")
+            _render_discount_code_detail(message, uid, code_id)
+            return
+
+        if sn == "admin_discount_edit_total" and is_admin(uid):
+            code_id = sd.get("edit_id")
+            val = parse_int(message.text or "")
+            if val is None or val < 0:
+                bot.send_message(uid, "⚠️ عدد معتبر وارد کنید. ۰ = نامحدود")
+                return
+            update_discount_code_field(code_id, "max_uses_total", val)
+            state_clear(uid)
+            bot.send_message(uid, "✅ حداکثر استفاده کل ویرایش شد.")
+            _render_discount_code_detail(message, uid, code_id)
+            return
+
+        if sn == "admin_discount_edit_per" and is_admin(uid):
+            code_id = sd.get("edit_id")
+            val = parse_int(message.text or "")
+            if val is None or val < 0:
+                bot.send_message(uid, "⚠️ عدد معتبر وارد کنید. ۰ = نامحدود")
+                return
+            update_discount_code_field(code_id, "max_uses_per_user", val)
+            state_clear(uid)
+            bot.send_message(uid, "✅ حداکثر استفاده هر کاربر ویرایش شد.")
+            _render_discount_code_detail(message, uid, code_id)
+            return
+
+        # ── User: Voucher code redemption ─────────────────────────────────────
+        if sn == "await_voucher_code":
+            code = (message.text or "").strip()
+            if not code:
+                bot.send_message(uid, "⚠️ کد کارت هدیه نمی‌تواند خالی باشد.")
+                return
+            vc = get_voucher_code_by_code(code)
+            if not vc:
+                bot.send_message(uid,
+                    "❌ <b>کد کارت هدیه معتبر نیست.</b>\n\n"
+                    "لطفاً کد را با دقت بررسی کنید و دوباره وارد نمایید.",
+                    reply_markup=back_button("main"))
+                state_clear(uid)
+                return
+            if vc["is_used"]:
+                bot.send_message(uid,
+                    "❌ <b>این کارت هدیه قبلاً استفاده شده است.</b>\n\n"
+                    "هر کد کارت هدیه تنها یک بار قابل استفاده می‌باشد.",
+                    reply_markup=back_button("main"))
+                state_clear(uid)
+                return
+            redeemed = redeem_voucher_code(vc["id"], uid)
+            if not redeemed:
+                bot.send_message(uid,
+                    "⚠️ متأسفانه این کد در همین لحظه توسط شخص دیگری استفاده شد.\n"
+                    "لطفاً با پشتیبانی تماس بگیرید.",
+                    reply_markup=back_button("main"))
+                state_clear(uid)
+                return
+            state_clear(uid)
+            if vc["gift_type"] == "wallet":
+                amount = int(vc["gift_amount"] or 0)
+                update_balance(uid, amount)
+                bot.send_message(uid,
+                    "🎉✨ <b>کارت هدیه با موفقیت ثبت شد!</b> ✨🎉\n\n"
+                    f"🎫 کد: <code>{esc(vc['code'])}</code>\n"
+                    f"💰 هدیه شما: <b>{fmt_price(amount)}</b> تومان\n\n"
+                    "💳 موجودی کیف پول شما به همین مقدار شارژ شد.\n"
+                    "🛒 اکنون می‌توانید از موجودی برای خرید یا تمدید سرویس استفاده کنید.\n\n"
+                    "🙏 از انتخاب شما متشکریم!",
+                    reply_markup=kb_main(uid))
+            else:
+                # Config gift — reserve and assign a config from the package
+                pkg_id = vc["package_id"]
+                pkg = get_package(pkg_id) if pkg_id else None
+                if not pkg:
+                    bot.send_message(uid,
+                        "⚠️ متأسفانه پکیج مرتبط با این کارت هدیه یافت نشد.\n"
+                        "لطفاً با پشتیبانی تماس بگیرید.",
+                        reply_markup=back_button("main"))
+                    return
+                config_id = reserve_first_config(pkg_id)
+                if not config_id:
+                    bot.send_message(uid,
+                        "⚠️ متأسفانه موجودی کانفیگ برای این کارت هدیه به پایان رسیده است.\n"
+                        "لطفاً با پشتیبانی تماس بگیرید.",
+                        reply_markup=back_button("main"))
+                    return
+                try:
+                    purchase_id = assign_config_to_user(config_id, uid, pkg_id, 0, "voucher", is_test=0)
+                except Exception:
+                    bot.send_message(uid,
+                        "⚠️ خطایی هنگام ثبت هدیه رخ داد. لطفاً با پشتیبانی تماس بگیرید.",
+                        reply_markup=back_button("main"))
+                    return
+                from ..ui.notifications import deliver_purchase_message
+                bot.send_message(uid,
+                    "🎉✨ <b>کارت هدیه با موفقیت ثبت شد!</b> ✨🎉\n\n"
+                    f"🎫 کد: <code>{esc(vc['code'])}</code>\n"
+                    f"🎁 هدیه شما: سرویس از پکیج <b>{esc(pkg['name'])}</b>\n\n"
+                    "📦 کانفیگ هدیه به بخش «کانفیگ‌های من» اضافه شد.\n"
+                    "🚀 همین الان می‌توانید از سرویس خود لذت ببرید!\n\n"
+                    "🙏 از انتخاب شما سپاسگزاریم.",
+                    reply_markup=kb_main(uid))
+                deliver_purchase_message(uid, purchase_id)
+            return
+
+        # ── Admin: Voucher creation ───────────────────────────────────────────
+        if sn == "admin_vch_add_name" and is_admin(uid):
+            name = (message.text or "").strip()
+            if not name:
+                bot.send_message(uid, "⚠️ نام نمی‌تواند خالی باشد.", reply_markup=back_button("admin:vouchers"))
+                return
+            state_set(uid, "admin_vch_pick_gift_type", vch_name=name)
+            kb = types.InlineKeyboardMarkup()
+            kb.row(
+                types.InlineKeyboardButton("💰 هدیه موجودی کیف پول", callback_data="admin:vch:gift_type:wallet"),
+                types.InlineKeyboardButton("📦 هدیه کانفیگ",          callback_data="admin:vch:gift_type:config"),
+            )
+            kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin:vouchers"))
+            bot.send_message(uid,
+                f"🎫 نام: <b>{esc(name)}</b>\n\n"
+                "مرحله ۲: نوع هدیه را انتخاب کنید:", reply_markup=kb)
+            return
+
+        if sn == "admin_vch_add_amount" and is_admin(uid):
+            amount = parse_int(message.text or "")
+            if not amount or amount <= 0:
+                bot.send_message(uid, "⚠️ مبلغ معتبر وارد کنید (بزرگتر از صفر).")
+                return
+            state_set(uid, "admin_vch_add_count_wallet",
+                      vch_name=sd.get("vch_name", ""), gift_amount=amount)
+            bot.send_message(uid,
+                "🎫 <b>افزودن کارت هدیه</b>\n\n"
+                "مرحله آخر: تعداد کدهای کارت هدیه را وارد کنید:\n"
+                "<i>مثال: ۵۰</i>",
+                reply_markup=back_button("admin:vouchers"))
+            return
+
+        if sn == "admin_vch_add_count_wallet" and is_admin(uid):
+            count = parse_int(message.text or "")
+            if not count or count <= 0 or count > 2000:
+                bot.send_message(uid, "⚠️ تعداد باید بین ۱ تا ۲۰۰۰ باشد.")
+                return
+            vch_name = sd.get("vch_name", "")
+            gift_amount = int(sd.get("gift_amount", 0) or 0)
+            prefix = (setting_get("brand_title", "") or "GIFT").upper().replace(" ", "")[:6]
+            codes = _generate_voucher_codes(count, prefix)
+            batch_id = add_voucher_batch(vch_name, "wallet", gift_amount, None, codes)
+            log_admin_action(uid, f"دسته کارت هدیه '{vch_name}' با {count} کد ساخته شد")
+            state_clear(uid)
+            # Send confirmation + all codes in one or more messages
+            header = (
+                f"✅ <b>کارت هدیه ساخته شد!</b>\n\n"
+                f"🎫 نام: {esc(vch_name)}\n"
+                f"💰 هدیه: {fmt_price(gift_amount)} تومان\n"
+                f"📊 تعداد کدها: {count}\n\n"
+                "─────────────────────\n"
+                "کدها (قابل کپی):\n\n"
+            )
+            code_lines = [f"<code>{c}</code>" for c in codes]
+            _send_codes_to_admin(uid, header, code_lines)
+            _render_voucher_admin_list(message, uid)
+            return
+
+        if sn == "admin_vch_add_count_config" and is_admin(uid):
+            count = parse_int(message.text or "")
+            if not count or count <= 0 or count > 2000:
+                bot.send_message(uid, "⚠️ تعداد باید بین ۱ تا ۲۰۰۰ باشد.")
+                return
+            vch_name  = sd.get("vch_name", "")
+            package_id = int(sd.get("package_id", 0) or 0)
+            pkg = get_package(package_id) if package_id else None
+            prefix = (setting_get("brand_title", "") or "GIFT").upper().replace(" ", "")[:6]
+            codes = _generate_voucher_codes(count, prefix)
+            batch_id = add_voucher_batch(vch_name, "config", None, package_id, codes)
+            log_admin_action(uid, f"دسته کارت هدیه (کانفیگ) '{vch_name}' با {count} کد ساخته شد")
+            state_clear(uid)
+            pkg_label = f"{esc(pkg['name'])} | {fmt_vol(pkg['volume_gb'])} | {fmt_dur(pkg['duration_days'])}" if pkg else "-"
+            header = (
+                f"✅ <b>کارت هدیه ساخته شد!</b>\n\n"
+                f"🎫 نام: {esc(vch_name)}\n"
+                f"📦 هدیه: {pkg_label}\n"
+                f"📊 تعداد کدها: {count}\n\n"
+                "─────────────────────\n"
+                "کدها (قابل کپی):\n\n"
+            )
+            code_lines = [f"<code>{c}</code>" for c in codes]
+            _send_codes_to_admin(uid, header, code_lines)
+            _render_voucher_admin_list(message, uid)
             return
 
         # ── Admin: Type add/edit ───────────────────────────────────────────────
@@ -388,12 +761,16 @@ def universal_handler(message):
             if not name:
                 bot.send_message(uid, "⚠️ نام پکیج معتبر وارد کنید.", reply_markup=back_button("admin:types"))
                 return
-            state_set(uid, "admin_add_package_volume", type_id=sd["type_id"], package_name=name)
+            state_set(uid, "admin_add_package_show_name", type_id=sd["type_id"], package_name=name)
+            kb = types.InlineKeyboardMarkup()
+            kb.row(
+                types.InlineKeyboardButton("✅ بله", callback_data="admin:pkg:add:sn:1"),
+                types.InlineKeyboardButton("❌ خیر", callback_data="admin:pkg:add:sn:0"),
+            )
             bot.send_message(uid,
-                "🔋 حجم پکیج را به گیگ وارد کنید:\n"
-                "💡 برای حجم نامحدود عدد <b>0</b> بفرستید.\n"
-                "💡 برای کمتر از ۱ گیگ اعشار وارد کنید (مثلاً <b>0.5</b>).",
-                reply_markup=back_button("admin:types"))
+                f"📦 نام پکیج: <b>{esc(name)}</b>\n\n"
+                "👁 آیا نام پکیج به کاربر نشان داده شود؟",
+                reply_markup=kb)
             return
 
         if sn == "admin_add_package_volume" and is_admin(uid):
@@ -403,7 +780,8 @@ def universal_handler(message):
                 return
             vol_label = "حجم نامحدود" if volume == 0 else fmt_vol(volume)
             state_set(uid, "admin_add_package_duration",
-                      type_id=sd["type_id"], package_name=sd["package_name"], volume=volume)
+                      type_id=sd["type_id"], package_name=sd["package_name"],
+                      volume=volume, show_name=sd.get("show_name", 1))
             bot.send_message(uid,
                 f"✅ حجم: <b>{vol_label}</b>\n\n"
                 "⏰ مدت پکیج را به روز وارد کنید:\n"
@@ -419,7 +797,8 @@ def universal_handler(message):
             dur_label = "زمان نامحدود" if duration == 0 else f"{duration} روز"
             state_set(uid, "admin_add_package_price",
                       type_id=sd["type_id"], package_name=sd["package_name"],
-                      volume=sd["volume"], duration=duration)
+                      volume=sd["volume"], duration=duration,
+                      show_name=sd.get("show_name", 1))
             bot.send_message(uid,
                 f"✅ مدت: <b>{dur_label}</b>\n\n"
                 "💰 قیمت پکیج را به تومان وارد کنید.\nبرای تست رایگان عدد <b>0</b> بفرستید:",
@@ -431,18 +810,21 @@ def universal_handler(message):
             if price is None or price < 0:
                 bot.send_message(uid, "⚠️ قیمت معتبر وارد کنید.", reply_markup=back_button("admin:types"))
                 return
-            add_package(sd["type_id"], sd["package_name"], sd["volume"], sd["duration"], price)
+            show_name_val = sd.get("show_name", 1)
+            add_package(sd["type_id"], sd["package_name"], sd["volume"], sd["duration"], price, show_name=show_name_val)
             log_admin_action(uid, f"پکیج '{sd['package_name']}' ثبت شد")
             state_clear(uid)
             vol_label = "حجم نامحدود" if sd["volume"] == 0 else fmt_vol(sd["volume"])
             dur_label = "زمان نامحدود" if sd["duration"] == 0 else f"{sd['duration']} روز"
             pri_label = "رایگان" if price == 0 else f"{fmt_price(price)} تومان"
+            sn_label  = "بله" if show_name_val else "خیر"
             bot.send_message(uid,
                 f"✅ پکیج با موفقیت ثبت شد.\n\n"
                 f"📦 <b>{esc(sd['package_name'])}</b>\n"
                 f"🔋 حجم: {vol_label}\n"
                 f"⏰ مدت: {dur_label}\n"
-                f"💰 قیمت: {pri_label}")
+                f"💰 قیمت: {pri_label}\n"
+                f"👁 نمایش نام به کاربر: {sn_label}")
             _show_admin_types(message)
             return
 
@@ -474,21 +856,26 @@ def universal_handler(message):
             state_clear(uid)
             package_row = get_package(package_id)
             if package_row:
+                show_name_val = package_row["show_name"] if "show_name" in package_row.keys() else 1
+                show_name_lbl = "👁 نمایش نام به کاربر: ✅ بله" if show_name_val else "👁 نمایش نام به کاربر: ❌ خیر"
                 kb = types.InlineKeyboardMarkup()
                 kb.add(types.InlineKeyboardButton("✏️ ویرایش نام",   callback_data=f"admin:pkg:ef:name:{package_id}"))
                 kb.add(types.InlineKeyboardButton("💰 ویرایش قیمت",  callback_data=f"admin:pkg:ef:price:{package_id}"))
                 kb.add(types.InlineKeyboardButton("🔋 ویرایش حجم",   callback_data=f"admin:pkg:ef:volume:{package_id}"))
                 kb.add(types.InlineKeyboardButton("⏰ ویرایش مدت",   callback_data=f"admin:pkg:ef:dur:{package_id}"))
                 kb.add(types.InlineKeyboardButton("🔢 جایگاه نمایش", callback_data=f"admin:pkg:ef:position:{package_id}"))
+                kb.add(types.InlineKeyboardButton(show_name_lbl,     callback_data=f"admin:pkg:toggle_sn:{package_id}"))
                 kb.add(types.InlineKeyboardButton("🔙 بازگشت",       callback_data="admin:types"))
                 cur_pos = package_row["position"] if "position" in package_row.keys() else 0
+                sn_line = "✅ بله" if show_name_val else "❌ خیر"
                 text = (
                     f"✅ ویرایش انجام شد\n\n"
                     f"📦 <b>{esc(package_row['name'])}</b>\n"
                     f"قیمت: {fmt_price(package_row['price'])} تومان\n"
                     f"حجم: {fmt_vol(package_row['volume_gb'])}\n"
                     f"مدت: {fmt_dur(package_row['duration_days'])}\n"
-                    f"جایگاه: {cur_pos}"
+                    f"جایگاه: {cur_pos}\n"
+                    f"نمایش نام به کاربر: {sn_line}"
                 )
                 send_or_edit(message, text, kb)
             else:
@@ -895,6 +1282,9 @@ def universal_handler(message):
 
         if sn == "admin_set_tronpays_rial_key" and is_admin(uid):
             val = (message.text or "").strip()
+            if not val:
+                bot.send_message(uid, "⚠️ کلید API نمی‌تواند خالی باشد. لطفاً دوباره ارسال کنید:", reply_markup=back_button("adm:set:gw:tronpays_rial"))
+                return
             setting_set("tronpays_rial_api_key", val)
             log_admin_action(uid, "کلید API TronPays تغییر کرد")
             state_clear(uid)
@@ -1029,55 +1419,18 @@ def universal_handler(message):
                 return
             file_name = message.document.file_name or ""
             if not file_name.lower().endswith(".db"):
-                bot.send_message(uid, "⚠️ فقط فایل با پسوند <code>.db</code> قابل قبول است.", reply_markup=back_button("admin:backup"))
+                bot.send_message(uid, "⚠️ فقط فایل با پسوند <code>.db</code> قابل قبول است.", parse_mode="HTML", reply_markup=back_button("admin:backup"))
                 return
             try:
-                file_info = bot.get_file(message.document.file_id)
+                from ..admin.backup import safe_restore_db
+                file_info  = bot.get_file(message.document.file_id)
                 downloaded = bot.download_file(file_info.file_path)
-
-                # بررسی صحت فایل بکاپ قبل از جایگزینی
-                import tempfile, shutil
-                tmp_fd, tmp_path = tempfile.mkstemp(suffix=".db")
-                try:
-                    with os.fdopen(tmp_fd, "wb") as tmp_f:
-                        tmp_f.write(downloaded)
-                    # اعتبارسنجی: آیا فایل یک دیتابیس SQLite سالم است؟
-                    check_conn = sqlite3.connect(tmp_path)
-                    result = check_conn.execute("PRAGMA integrity_check").fetchone()
-                    check_conn.close()
-                    if result[0] != "ok":
-                        os.unlink(tmp_path)
-                        bot.send_message(uid, "❌ فایل بکاپ خراب است (integrity check failed).", reply_markup=back_button("admin:backup"))
-                        return
-                except sqlite3.DatabaseError:
-                    os.unlink(tmp_path)
-                    bot.send_message(uid, "❌ فایل ارسال‌شده یک دیتابیس SQLite معتبر نیست.", reply_markup=back_button("admin:backup"))
-                    return
-                finally:
-                    if os.path.exists(tmp_path):
-                        os.unlink(tmp_path)
-
-                # ابتدا بکاپ از دیتابیس فعلی
-                backup_ts = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-                pre_restore_backup = f"{DB_NAME}.pre_restore_{backup_ts}"
-                if os.path.exists(DB_NAME):
-                    shutil.copy2(DB_NAME, pre_restore_backup)
-                # جایگزینی دیتابیس
-                with open(DB_NAME, "wb") as f:
-                    f.write(downloaded)
-                # حذف فایل‌های WAL و SHM قدیمی تا دیتابیس جدید خراب نشود
-                for ext in ("-wal", "-shm"):
-                    wal_path = DB_NAME + ext
-                    if os.path.exists(wal_path):
-                        os.remove(wal_path)
+                ok, msg    = safe_restore_db(downloaded, file_name)
                 state_clear(uid)
-                bot.send_message(uid,
-                    f"✅ بکاپ با موفقیت بازیابی شد.\n\n"
-                    f"💾 نسخه قبلی در <code>{esc(pre_restore_backup)}</code> ذخیره شد.\n"
-                    f"⚠️ برای اعمال کامل، ربات را ریستارت کنید.",
-                    reply_markup=back_button("admin:backup"))
+                icon = "✅" if ok else "❌"
+                bot.send_message(uid, f"{icon} {msg}", parse_mode="HTML", reply_markup=back_button("admin:backup"))
             except Exception as e:
-                bot.send_message(uid, f"❌ خطا در بازیابی بکاپ: {esc(str(e))}", reply_markup=back_button("admin:backup"))
+                bot.send_message(uid, f"❌ خطا در بازیابی بکاپ: {esc(str(e))}", parse_mode="HTML", reply_markup=back_button("admin:backup"))
             return
 
         # ── Admin: User Search ────────────────────────────────────────────────
@@ -1740,6 +2093,22 @@ def universal_handler(message):
         state_clear(uid)
         bot.send_message(uid, "⚠️ خطایی رخ داد. لطفاً دوباره از منو ادامه دهید.", reply_markup=kb_main(uid))
         return
+
+    # ── Auto-detect: admin sends a .db file without restore state ─────────
+    if message.content_type == "document" and is_admin(uid):
+        file_name = message.document.file_name or ""
+        if file_name.lower().endswith(".db"):
+            try:
+                from ..admin.backup import safe_restore_db
+                file_info  = bot.get_file(message.document.file_id)
+                downloaded = bot.download_file(file_info.file_path)
+                ok, msg    = safe_restore_db(downloaded, file_name)
+                state_clear(uid)
+                icon = "✅" if ok else "❌"
+                bot.send_message(uid, f"{icon} {msg}", parse_mode="HTML", reply_markup=back_button("admin:backup"))
+            except Exception as e:
+                bot.send_message(uid, f"❌ خطا در بازیابی بکاپ: {esc(str(e))}", parse_mode="HTML", reply_markup=back_button("admin:backup"))
+            return
 
     # Fallback
     if message.content_type == "text":

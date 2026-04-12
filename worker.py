@@ -54,7 +54,7 @@ PANEL_PORT     = int(os.getenv("PANEL_PORT", "2053"))
 PANEL_PATCH    = os.getenv("PANEL_PATCH",    "").strip("/")
 PANEL_USERNAME = os.getenv("PANEL_USERNAME", "")
 PANEL_PASSWORD = os.getenv("PANEL_PASSWORD", "")
-POLL_INTERVAL  = int(os.getenv("POLL_INTERVAL", "10"))
+POLL_INTERVAL  = int(os.getenv("POLL_INTERVAL", "15"))
 INBOUND_ID     = int(os.getenv("INBOUND_ID", "1"))
 PROTOCOL       = os.getenv("PROTOCOL", "vless").lower()
 

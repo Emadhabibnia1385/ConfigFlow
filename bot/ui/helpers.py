@@ -3,10 +3,28 @@
 Core Telegram UI helpers: message editing/sending, bot commands,
 channel lock enforcement.
 """
+import time
+import threading
 from telebot import types
 
 from ..db import setting_get
 from ..bot_instance import bot
+
+# ── Channel membership cache (TTL = 60 s) ─────────────────────────────────────
+# Each bot.get_chat_member() call is an HTTP round-trip to Telegram (~100-300ms).
+# Caching the result per-user for 60 s cuts the vast majority of these calls.
+_CHANNEL_CACHE: dict[int, tuple[bool, float]] = {}
+_CHANNEL_CACHE_LOCK = threading.Lock()
+_CHANNEL_CACHE_TTL  = 300.0  # seconds (5 min)
+
+
+def _invalidate_channel_cache(user_id: int | None = None) -> None:
+    """Invalidate one user or the whole cache (pass None)."""
+    with _CHANNEL_CACHE_LOCK:
+        if user_id is None:
+            _CHANNEL_CACHE.clear()
+        else:
+            _CHANNEL_CACHE.pop(user_id, None)
 
 
 # ── Bot commands ───────────────────────────────────────────────────────────────
@@ -54,11 +72,25 @@ def check_channel_membership(user_id):
     channel_id = setting_get("channel_id", "").strip()
     if not channel_id:
         return True
+
+    now = time.monotonic()
+    with _CHANNEL_CACHE_LOCK:
+        cached = _CHANNEL_CACHE.get(user_id)
+        if cached is not None:
+            result, ts = cached
+            if (now - ts) < _CHANNEL_CACHE_TTL:
+                return result
+
+    # Cache miss or stale — do the real API call
     try:
         member = bot.get_chat_member(channel_id, user_id)
-        return member.status in ("member", "administrator", "creator")
+        is_member = member.status in ("member", "administrator", "creator")
     except Exception:
-        return True
+        is_member = True  # fail-open: don't block users on API errors
+
+    with _CHANNEL_CACHE_LOCK:
+        _CHANNEL_CACHE[user_id] = (is_member, now)
+    return is_member
 
 
 def channel_lock_message(target):

@@ -38,6 +38,10 @@ def create_tetrapay_order(amount_toman, hash_id, description="پرداخت"):
         return False, {"error": str(e)}
 
 
+# Status 101 means "already verified before" — treat as success to avoid double-deny
+_TETRAPAY_SUCCESS_STATUSES = {"100", "101"}
+
+
 def verify_tetrapay_order(authority):
     api_key = setting_get("tetrapay_api_key", "")
     if not api_key:
@@ -54,8 +58,11 @@ def verify_tetrapay_order(authority):
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             result = json.loads(resp.read().decode())
-        if str(result.get("status")) == "100":
+        status_str = str(result.get("status", ""))
+        print(f"[TetraPay] verify authority={authority!r} status={status_str!r} result={result!r}")
+        if status_str in _TETRAPAY_SUCCESS_STATUSES:
             return True, result
         return False, result
     except Exception as e:
+        print(f"[TetraPay] verify ERROR authority={authority!r} error={e}")
         return False, {"error": str(e)}

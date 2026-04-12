@@ -20,7 +20,7 @@ from ..db import (
     mark_purchase_reward_given, get_referral_by_referee,
     update_balance,
 )
-from ..helpers import esc, fmt_price
+from ..helpers import esc, fmt_price, now_str
 from ..bot_instance import bot
 from ..group_manager import send_to_topic
 
@@ -43,11 +43,14 @@ def deliver_purchase_message(chat_id, purchase_id):
         return
     cfg          = item["config_text"]
     service_name = urllib.parse.unquote(item["service_name"] or "")
+    show_pkg_name = ("show_name" not in item.keys()) or bool(item["show_name"])
+    package_line = f"📦 پکیج: <b>{esc(item['package_name'])}</b>\n" if show_pkg_name and item["package_name"] else ""
     expired_note = "\n\n⚠️ <b>این سرویس توسط ادمین منقضی شده است.</b>" if item["is_expired"] else ""
     text = (
         f"✅ <b>{'تست رایگان' if item['is_test'] else 'سرویس شما آماده است'}</b>\n\n"
         f"🔮 نام سرویس: <b>{esc(service_name)}</b>\n"
         f"🧩 نوع سرویس: <b>{esc(item['type_name'])}</b>\n"
+        f"{package_line}"
         f"🔋 حجم: <b>{item['volume_gb']}</b> گیگ\n"
         f"⏰ مدت: <b>{item['duration_days']}</b> روز\n\n"
         f"💝 <b>Config:</b>\n<code>{esc(cfg)}</code>\n\n"
@@ -92,15 +95,25 @@ def deliver_purchase_message(chat_id, purchase_id):
 
 
 # ── Admin notifications ────────────────────────────────────────────────────────
-def admin_purchase_notify(method_label, user_row, package_row):
+def admin_purchase_notify(method_label, user_row, package_row, purchase_id=None):
+    svc_name = None
+    if purchase_id:
+        try:
+            _p = get_purchase(purchase_id)
+            svc_name = urllib.parse.unquote(_p["service_name"]) if _p and _p["service_name"] else None
+        except Exception:
+            pass
+    svc_line = f"🏷 نام سرویس: {esc(svc_name)}\n" if svc_name else ""
     text = (
         f"❗️ | خرید جدید ({method_label})\n\n"
+        f"🕐 زمان: {now_str()}\n"
         f"▫️ آیدی کاربر: <code>{user_row['user_id']}</code>\n"
         f"👨‍💼 نام: {esc(user_row['full_name'])}\n"
         f"⚡️ نام کاربری: {esc(user_row['username'] or 'ندارد')}\n"
         f"💰 مبلغ: {fmt_price(package_row['price'])} تومان\n"
         f"🚦 سرور: {esc(package_row['type_name'])}\n"
         f"✏️ پکیج: {esc(package_row['name'])}\n"
+        f"{svc_line}"
         f"🔋 حجم: {package_row['volume_gb']} گیگ\n"
         f"⏰ مدت: {package_row['duration_days']} روز"
     )
@@ -133,12 +146,13 @@ def admin_renewal_notify(user_id, purchase_item, package_row, amount, method_lab
     config_id = purchase_item["config_id"]
     text = (
         f"♻️ | <b>درخواست تمدید</b> ({method_label})\n\n"
+        f"� زمان: {now_str()}\n"
         f"👤 کاربر: {esc(user_row['full_name'])}\n"
         f"⚡️ نام کاربری: {esc(user_row['username'] or 'ندارد')}\n"
         f"🆔 آیدی: <code>{user_row['user_id']}</code>\n"
         f"💰 مبلغ پرداختی: <b>{fmt_price(amount)}</b> تومان\n\n"
         f"📌 <b>سرویس فعلی:</b>\n"
-        f"🔮 نام: {esc(urllib.parse.unquote(purchase_item['service_name'] or ''))}\n"
+        f"🏷 نام سرویس: {esc(urllib.parse.unquote(purchase_item['service_name'] or ''))}\n"
         f"🧩 نوع: {esc(purchase_item['type_name'])}\n\n"
         f"📦 <b>پکیج تمدید:</b>\n"
         f"✏️ نام: {esc(package_row['name'])}\n"
@@ -245,7 +259,7 @@ def _complete_pending_order(pending_id, cfg_name, cfg_text, inquiry_link):
         pass
     deliver_purchase_message(user_id, purchase_id)
     if pkg:
-        admin_purchase_notify(p_row["payment_method"], user, pkg)
+        admin_purchase_notify(p_row["payment_method"], user, pkg, purchase_id=purchase_id)
     return True
 
 
@@ -294,7 +308,7 @@ def auto_fulfill_pending_orders(package_id):
             pkg  = get_package(package_id)
             user = get_user(user_id)
             if pkg and user:
-                admin_purchase_notify(p_row["payment_method"], user, pkg)
+                admin_purchase_notify(p_row["payment_method"], user, pkg, purchase_id=purchase_id)
         except Exception:
             pass
         fulfilled_count += 1

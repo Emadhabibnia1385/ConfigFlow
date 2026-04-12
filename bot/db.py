@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 import json
 import sqlite3
+import threading
+import time
 import uuid
 from datetime import datetime, timedelta
 
@@ -8,13 +10,50 @@ from .config import DB_NAME, CRYPTO_COINS
 from .helpers import now_str
 
 
-# ── Connection ─────────────────────────────────────────────────────────────────
+# ── Per-thread persistent connection ──────────────────────────────────────────
+# Re-using one connection per OS thread (telebot uses a thread-pool) avoids the
+# overhead of opening/closing a new file handle on every DB call.
+_tls = threading.local()
+
+
 def get_conn():
-    c = sqlite3.connect(DB_NAME, check_same_thread=False)
-    c.row_factory = sqlite3.Row
-    c.execute("PRAGMA foreign_keys = ON")
-    c.execute("PRAGMA journal_mode = WAL")  # allow concurrent reads during writes
-    return c
+    conn = getattr(_tls, "conn", None)
+    if conn is None:
+        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous  = NORMAL")   # safe with WAL, faster
+        conn.execute("PRAGMA cache_size    = -8000")   # 8 MB page cache per conn
+        conn.execute("PRAGMA busy_timeout  = 5000")    # wait up to 5s on write contention
+        _tls.conn = conn
+    return conn
+
+
+# ── Settings in-process cache (TTL = 10 s) ────────────────────────────────────
+# setting_get() is called on EVERY message/callback (bot_status, channel_id,
+# gateway flags …).  Hitting SQLite for each of those adds up fast.
+_SETTINGS_CACHE: dict[str, str]  = {}
+_SETTINGS_CACHE_TS: float        = 0.0
+_SETTINGS_CACHE_TTL: float       = 60.0   # seconds
+_SETTINGS_LOCK                   = threading.Lock()
+
+
+def _refresh_settings_cache(conn) -> None:
+    rows = conn.execute("SELECT key, value FROM settings").fetchall()
+    with _SETTINGS_LOCK:
+        _SETTINGS_CACHE.clear()
+        for r in rows:
+            _SETTINGS_CACHE[r["key"]] = r["value"] or ""
+        global _SETTINGS_CACHE_TS
+        _SETTINGS_CACHE_TS = time.monotonic()
+
+
+def _invalidate_settings_cache() -> None:
+    """Call after any setting_set() so the next read re-fetches from DB."""
+    global _SETTINGS_CACHE_TS
+    with _SETTINGS_LOCK:
+        _SETTINGS_CACHE_TS = 0.0
 
 
 # ── Database Initialisation ────────────────────────────────────────────────────
@@ -185,6 +224,40 @@ def init_db():
                 start_reward_given   INTEGER NOT NULL DEFAULT 0,
                 purchase_reward_given INTEGER NOT NULL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS discount_codes (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                code              TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+                discount_type     TEXT    NOT NULL DEFAULT 'pct',
+                discount_value    INTEGER NOT NULL DEFAULT 0,
+                max_uses_total    INTEGER NOT NULL DEFAULT 0,
+                max_uses_per_user INTEGER NOT NULL DEFAULT 0,
+                used_count        INTEGER NOT NULL DEFAULT 0,
+                is_active         INTEGER NOT NULL DEFAULT 1,
+                created_at        TEXT    NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS discount_code_uses (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                code_id  INTEGER NOT NULL REFERENCES discount_codes(id) ON DELETE CASCADE,
+                user_id  INTEGER NOT NULL,
+                used_at  TEXT    NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS voucher_batches (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT    NOT NULL,
+                gift_type   TEXT    NOT NULL DEFAULT 'wallet',
+                gift_amount INTEGER,
+                package_id  INTEGER,
+                total_count INTEGER NOT NULL DEFAULT 0,
+                created_at  TEXT    NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS voucher_codes (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id  INTEGER NOT NULL REFERENCES voucher_batches(id) ON DELETE CASCADE,
+                code      TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+                is_used   INTEGER NOT NULL DEFAULT 0,
+                used_by   INTEGER,
+                used_at   TEXT
+            );
         """)
 
         defaults = {
@@ -265,6 +338,8 @@ def init_db():
             "referral_purchase_reward_type":    "wallet",
             "referral_purchase_reward_amount":  "0",
             "referral_purchase_reward_package": "",
+            "discount_codes_enabled":             "1",
+            "vouchers_enabled":                   "1",
         }
         for coin, _ in CRYPTO_COINS:
             defaults[f"crypto_{coin}"] = ""
@@ -289,8 +364,29 @@ def init_db():
             "CREATE TABLE IF NOT EXISTS referrals (id INTEGER PRIMARY KEY AUTOINCREMENT, referrer_id INTEGER NOT NULL, referee_id INTEGER NOT NULL UNIQUE, created_at TEXT NOT NULL, start_reward_given INTEGER NOT NULL DEFAULT 0, purchase_reward_given INTEGER NOT NULL DEFAULT 0)",
             "CREATE TABLE IF NOT EXISTS agency_request_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, referee_uid INTEGER NOT NULL, chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS payment_admin_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, payment_id INTEGER NOT NULL, admin_id INTEGER NOT NULL, message_id INTEGER NOT NULL)",
+            "ALTER TABLE packages ADD COLUMN show_name INTEGER NOT NULL DEFAULT 1",
+            "CREATE TABLE IF NOT EXISTS discount_codes (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL UNIQUE COLLATE NOCASE, discount_type TEXT NOT NULL DEFAULT 'pct', discount_value INTEGER NOT NULL DEFAULT 0, max_uses_total INTEGER NOT NULL DEFAULT 0, max_uses_per_user INTEGER NOT NULL DEFAULT 0, used_count INTEGER NOT NULL DEFAULT 0, is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS discount_code_uses (id INTEGER PRIMARY KEY AUTOINCREMENT, code_id INTEGER NOT NULL REFERENCES discount_codes(id) ON DELETE CASCADE, user_id INTEGER NOT NULL, used_at TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS voucher_batches (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, gift_type TEXT NOT NULL DEFAULT 'wallet', gift_amount INTEGER, package_id INTEGER, total_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS voucher_codes (id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id INTEGER NOT NULL REFERENCES voucher_batches(id) ON DELETE CASCADE, code TEXT NOT NULL UNIQUE COLLATE NOCASE, is_used INTEGER NOT NULL DEFAULT 0, used_by INTEGER, used_at TEXT)",
         ]
         for sql in migrations:
+            try:
+                conn.execute(sql)
+            except Exception:
+                pass
+
+        # ── Indexes (CREATE IF NOT EXISTS is idempotent) ───────────────────────
+        indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_configs_pkg_avail   ON configs(package_id) WHERE sold_to IS NULL AND is_expired=0",
+            "CREATE INDEX IF NOT EXISTS idx_configs_sold_to      ON configs(sold_to)",
+            "CREATE INDEX IF NOT EXISTS idx_payments_user        ON payments(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_payments_status      ON payments(status)",
+            "CREATE INDEX IF NOT EXISTS idx_purchases_user       ON purchases(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_referrals_referrer   ON referrals(referrer_id)",
+            "CREATE INDEX IF NOT EXISTS idx_users_status         ON users(status)",
+        ]
+        for sql in indexes:
             try:
                 conn.execute(sql)
             except Exception:
@@ -299,9 +395,18 @@ def init_db():
 
 # ── Settings ───────────────────────────────────────────────────────────────────
 def setting_get(key, default=""):
-    with get_conn() as conn:
-        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
-    return row["value"] if row else default
+    now = time.monotonic()
+    with _SETTINGS_LOCK:
+        fresh = (now - _SETTINGS_CACHE_TS) < _SETTINGS_CACHE_TTL
+        if fresh:
+            return _SETTINGS_CACHE.get(key, default)
+    # Cache stale — reload from DB (outside lock to avoid blocking)
+    try:
+        _refresh_settings_cache(get_conn())
+    except Exception:
+        pass
+    with _SETTINGS_LOCK:
+        return _SETTINGS_CACHE.get(key, default)
 
 
 def setting_set(key, value):
@@ -311,6 +416,7 @@ def setting_set(key, value):
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, value)
         )
+    _invalidate_settings_cache()
 
 
 # ── Users ──────────────────────────────────────────────────────────────────────
@@ -578,15 +684,15 @@ def get_package(package_id):
         ).fetchone()
 
 
-def add_package(type_id, name, volume_gb, duration_days, price):
+def add_package(type_id, name, volume_gb, duration_days, price, show_name=1):
     with get_conn() as conn:
         max_pos = conn.execute(
             "SELECT COALESCE(MAX(position),0) FROM packages WHERE type_id=?", (type_id,)
         ).fetchone()[0]
         conn.execute(
-            "INSERT INTO packages(type_id,name,volume_gb,duration_days,price,active,position)"
-            " VALUES(?,?,?,?,?,1,?)",
-            (type_id, name.strip(), volume_gb, duration_days, price, max_pos + 1)
+            "INSERT INTO packages(type_id,name,volume_gb,duration_days,price,active,position,show_name)"
+            " VALUES(?,?,?,?,?,1,?,?)",
+            (type_id, name.strip(), volume_gb, duration_days, price, max_pos + 1, show_name)
         )
 
 
@@ -598,7 +704,7 @@ def toggle_package_active(package_id):
 
 
 def update_package_field(package_id, field, value):
-    allowed = {"name", "volume_gb", "duration_days", "price", "position"}
+    allowed = {"name", "volume_gb", "duration_days", "price", "position", "show_name"}
     if field not in allowed:
         return
     with get_conn() as conn:
@@ -741,6 +847,39 @@ def release_reserved_config(config_id):
         )
 
 
+def cleanup_stale_reservations():
+    """Clear reserved_payment_id for configs that are stuck from a previous crash/restart.
+    Safe to call at startup — never touches sold configs."""
+    with get_conn() as conn:
+        # 1. tmp_ reservations are always stale after a restart (used for wallet/free-test)
+        c1 = conn.execute(
+            "UPDATE configs SET reserved_payment_id=NULL "
+            "WHERE sold_to IS NULL AND reserved_payment_id LIKE 'tmp_%'"
+        )
+        freed_tmp = conn.execute("SELECT changes() AS c").fetchone()["c"]
+
+        # 2. Integer reservations where the payment is already rejected or error
+        conn.execute(
+            "UPDATE configs SET reserved_payment_id=NULL "
+            "WHERE sold_to IS NULL "
+            "  AND reserved_payment_id IS NOT NULL "
+            "  AND reserved_payment_id NOT LIKE 'tmp_%' "
+            "  AND CAST(reserved_payment_id AS INTEGER) IN ("
+            "    SELECT id FROM payments WHERE status IN ('rejected','error')"
+            "  )"
+        )
+        freed_bad = conn.execute("SELECT changes() AS c").fetchone()["c"]
+
+    total = freed_tmp + freed_bad
+    if total:
+        import logging
+        logging.getLogger(__name__).info(
+            f"cleanup_stale_reservations: freed {total} stale config reservation(s) "
+            f"(tmp={freed_tmp}, bad_payment={freed_bad})"
+        )
+    return total
+
+
 def expire_config(config_id):
     with get_conn() as conn:
         conn.execute("UPDATE configs SET is_expired=1 WHERE id=?", (config_id,))
@@ -785,7 +924,7 @@ def get_purchase(purchase_id):
     with get_conn() as conn:
         return conn.execute(
             """
-            SELECT pr.*, p.name AS package_name, p.volume_gb, p.duration_days, p.price,
+            SELECT pr.*, p.name AS package_name, p.show_name, p.volume_gb, p.duration_days, p.price,
                    t.name AS type_name, t.description AS type_description,
                    c.service_name, c.config_text, c.inquiry_link, c.is_expired
             FROM purchases pr
@@ -802,7 +941,7 @@ def get_user_purchases(user_id):
     with get_conn() as conn:
         return conn.execute(
             """
-            SELECT pr.*, p.name AS package_name, p.volume_gb, p.duration_days, p.price,
+            SELECT pr.*, p.name AS package_name, p.show_name, p.volume_gb, p.duration_days, p.price,
                    t.name AS type_name, t.description AS type_description,
                    c.service_name, c.config_text, c.inquiry_link, c.is_expired
             FROM purchases pr
@@ -943,6 +1082,28 @@ def get_payment(payment_id):
         return conn.execute(
             "SELECT * FROM payments WHERE id=?", (payment_id,)
         ).fetchone()
+
+
+def get_pending_payments_page(page=0, page_size=10):
+    """Return (total_count, list_of_dicts) for pending payments, oldest first."""
+    offset = page * page_size
+    with get_conn() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) AS c FROM payments WHERE status='pending'"
+        ).fetchone()["c"]
+        rows = conn.execute(
+            "SELECT p.*, u.full_name, u.username,"
+            " pk.name AS pkg_name, t.name AS type_name, pk.volume_gb, pk.duration_days"
+            " FROM payments p"
+            " LEFT JOIN users u ON u.user_id = p.user_id"
+            " LEFT JOIN packages pk ON pk.id = p.package_id"
+            " LEFT JOIN config_types t ON t.id = pk.type_id"
+            " WHERE p.status = 'pending'"
+            " ORDER BY p.created_at ASC"
+            " LIMIT ? OFFSET ?",
+            (page_size, offset)
+        ).fetchall()
+    return total, [dict(r) for r in rows]
 
 
 def update_payment_receipt(payment_id, file_id, text_value):
@@ -1157,6 +1318,112 @@ def get_pending_order(pending_id):
         return conn.execute(
             "SELECT * FROM pending_orders WHERE id=?", (pending_id,)
         ).fetchone()
+
+
+# ── Discount Codes ─────────────────────────────────────────────────────────────
+def get_all_discount_codes():
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT dc.*, "
+            "(SELECT COUNT(*) FROM discount_code_uses WHERE code_id=dc.id) as actual_uses "
+            "FROM discount_codes dc ORDER BY dc.id DESC"
+        ).fetchall()
+
+
+def get_discount_code(code_id):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT dc.*, "
+            "(SELECT COUNT(*) FROM discount_code_uses WHERE code_id=dc.id) as actual_uses "
+            "FROM discount_codes dc WHERE dc.id=?",
+            (code_id,)
+        ).fetchone()
+
+
+def get_discount_code_by_code(code):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM discount_codes WHERE LOWER(code)=LOWER(?)",
+            (code.strip(),)
+        ).fetchone()
+
+
+def add_discount_code(code, discount_type, discount_value, max_uses_total, max_uses_per_user):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO discount_codes(code, discount_type, discount_value, "
+            "max_uses_total, max_uses_per_user, used_count, is_active, created_at) "
+            "VALUES(?,?,?,?,?,0,1,?)",
+            (code.strip().upper(), discount_type, int(discount_value),
+             int(max_uses_total), int(max_uses_per_user), now_str())
+        )
+
+
+def toggle_discount_code(code_id):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE discount_codes SET is_active = 1 - is_active WHERE id=?",
+            (code_id,)
+        )
+
+
+def update_discount_code_field(code_id, field, value):
+    _allowed = {"code", "discount_type", "discount_value", "max_uses_total", "max_uses_per_user"}
+    if field not in _allowed:
+        return
+    with get_conn() as conn:
+        conn.execute(
+            f"UPDATE discount_codes SET {field}=? WHERE id=?",
+            (value, code_id)
+        )
+
+
+def delete_discount_code(code_id):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM discount_codes WHERE id=?", (code_id,))
+
+
+def get_discount_code_user_uses(code_id, user_id):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM discount_code_uses WHERE code_id=? AND user_id=?",
+            (code_id, user_id)
+        ).fetchone()
+        return row["cnt"] if row else 0
+
+
+def validate_discount_code(code, user_id, amount):
+    """Returns (ok, row, discount_amount, final_amount, error_msg)."""
+    row = get_discount_code_by_code(code)
+    if not row:
+        return False, None, 0, amount, "❌ کد تخفیف وارد شده معتبر نیست."
+    if not row["is_active"]:
+        return False, None, 0, amount, "❌ این کد تخفیف غیرفعال است."
+    if row["max_uses_total"] > 0 and row["used_count"] >= row["max_uses_total"]:
+        return False, None, 0, amount, "❌ ظرفیت این کد تخفیف به پایان رسیده است."
+    if row["max_uses_per_user"] > 0:
+        user_uses = get_discount_code_user_uses(row["id"], user_id)
+        if user_uses >= row["max_uses_per_user"]:
+            return False, None, 0, amount, "❌ شما قبلاً از این کد تخفیف استفاده کرده‌اید."
+    if row["discount_type"] == "pct":
+        disc = round(amount * row["discount_value"] / 100)
+    else:
+        disc = int(row["discount_value"])
+    disc = min(disc, amount)
+    final = max(0, amount - disc)
+    return True, row, disc, final, None
+
+
+def record_discount_usage(code_id, user_id):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO discount_code_uses(code_id, user_id, used_at) VALUES(?,?,?)",
+            (code_id, user_id, now_str())
+        )
+        conn.execute(
+            "UPDATE discount_codes SET used_count = used_count + 1 WHERE id=?",
+            (code_id,)
+        )
 
 
 def fulfill_pending_order(pending_id):
@@ -1382,3 +1649,73 @@ def get_unrewarded_purchase_referees(referrer_id):
             "WHERE r.referrer_id=? AND r.purchase_reward_given=0",
             (referrer_id,)
         ).fetchall()
+
+
+# ── Voucher Batches & Codes ────────────────────────────────────────────────────
+def add_voucher_batch(name, gift_type, gift_amount, package_id, codes):
+    """Create a batch and insert all generated codes. Returns batch_id."""
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO voucher_batches(name, gift_type, gift_amount, package_id, total_count, created_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (name, gift_type, gift_amount, package_id, len(codes), now_str())
+        )
+        batch_id = conn.execute("SELECT last_insert_rowid() AS x").fetchone()["x"]
+        conn.executemany(
+            "INSERT INTO voucher_codes(batch_id, code, is_used) VALUES(?,?,0)",
+            [(batch_id, c) for c in codes]
+        )
+        return batch_id
+
+
+def get_all_voucher_batches():
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT vb.*, "
+            "(SELECT COUNT(*) FROM voucher_codes WHERE batch_id=vb.id AND is_used=1) AS used_count "
+            "FROM voucher_batches vb ORDER BY vb.id DESC"
+        ).fetchall()
+
+
+def get_voucher_batch(batch_id):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT vb.*, "
+            "(SELECT COUNT(*) FROM voucher_codes WHERE batch_id=vb.id AND is_used=1) AS used_count "
+            "FROM voucher_batches vb WHERE vb.id=?",
+            (batch_id,)
+        ).fetchone()
+
+
+def get_voucher_codes_for_batch(batch_id):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM voucher_codes WHERE batch_id=? ORDER BY id ASC",
+            (batch_id,)
+        ).fetchall()
+
+
+def get_voucher_code_by_code(code):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT vc.*, vb.gift_type, vb.gift_amount, vb.package_id, vb.name AS batch_name "
+            "FROM voucher_codes vc JOIN voucher_batches vb ON vb.id=vc.batch_id "
+            "WHERE LOWER(vc.code)=LOWER(?)",
+            (code.strip(),)
+        ).fetchone()
+
+
+def redeem_voucher_code(code_id, user_id):
+    """Mark a voucher code as used. Returns True if newly redeemed, False if already used."""
+    with get_conn() as conn:
+        result = conn.execute(
+            "UPDATE voucher_codes SET is_used=1, used_by=?, used_at=? "
+            "WHERE id=? AND is_used=0",
+            (user_id, now_str(), code_id)
+        )
+        return result.rowcount > 0
+
+
+def delete_voucher_batch(batch_id):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM voucher_batches WHERE id=?", (batch_id,))

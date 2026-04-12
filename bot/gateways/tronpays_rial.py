@@ -101,28 +101,22 @@ def create_tronpays_rial_invoice(amount_toman, hash_id, description=""):
     Create a TronPays invoice.
 
     Returns:
-        (True, response_data) on success
+        (True, {"invoice_id": ..., "invoice_url": ...}) on success
         (False, {"error": ...}) on failure
-
-    Note:
-        Based on current docs, the success response schema is documented as "string",
-        so we return the raw/parsed API response instead of assuming fixed keys like
-        invoice_id or invoice_url.
     """
     api_key = setting_get("tronpays_rial_api_key", "").strip()
     if not api_key:
         return False, {
-            "error": "کلید API تران‌پیز ثبت نشده است. از پنل مدیریت ← تنظیمات ← درگاه‌ها اقدام کنید."
+            "error": "کلید API ترون‌پیز ثبت نشده است. از پنل مدیریت ← تنظیمات ← درگاه‌ها اقدام کنید."
         }
 
-    callback_url = setting_get("tronpays_rial_callback_url", "").strip() or "https://example.com/"
     safe_hash_id = _make_hash_id(str(hash_id))
 
+    # API schema only accepts: api_key, hash_id, amount
     payload = {
         "api_key": api_key,
         "hash_id": safe_hash_id,
         "amount": int(amount_toman),
-        "callback_url": callback_url,
     }
 
     success, result = _post_tronpays("/api/invoice/create", payload)
@@ -130,7 +124,44 @@ def create_tronpays_rial_invoice(amount_toman, hash_id, description=""):
     if not success:
         return False, result
 
-    return True, result
+    print("[TronPays] create invoice raw response:", result)
+
+    # Normalize response — try multiple possible key names
+    if isinstance(result, dict):
+        invoice_id = (
+            result.get("invoice_id")
+            or result.get("id")
+            or result.get("invoiceId")
+            or result.get("invoice")
+            or result.get("order_id")
+        )
+        invoice_url = (
+            result.get("invoice_url")
+            or result.get("payment_url")
+            or result.get("url")
+            or result.get("link")
+            or result.get("payment_link")
+            or result.get("pay_url")
+            or result.get("pay_link")
+        )
+
+        if invoice_id and invoice_url:
+            return True, {"invoice_id": str(invoice_id), "invoice_url": str(invoice_url)}
+
+        # Keys not found — return raw response as error so it can be debugged
+        return False, {
+            "error": f"پاسخ API ناشناخته است. لطفاً API ترون‌پیز را بررسی کنید.\nجواب API: {json.dumps(result, ensure_ascii=False)[:500]}"
+        }
+
+    # String response — might be the payment URL directly
+    if isinstance(result, str) and result.startswith("http"):
+        return False, {
+            "error": f"API یک URL برگرداند اما invoice_id مشخص نیست: {result[:200]}"
+        }
+
+    return False, {
+        "error": f"پاسخ API ناشناخته: {str(result)[:300]}"
+    }
 
 
 def check_tronpays_rial_invoice(invoice_id):
@@ -153,36 +184,47 @@ def check_tronpays_rial_invoice(invoice_id):
     success, result = _post_tronpays("/api/invoice/check", payload)
 
     if not success:
+        print(f"[TronPays] check invoice FAILED invoice_id={invoice_id!r} result={result!r}")
         return False, result
 
+    print(f"[TronPays] check invoice OK invoice_id={invoice_id!r} result={result!r}")
     return True, result
+
+
+_PAID_VALUES = {"paid", "success", "successful", "completed", "done", "confirmed", "approved"}
 
 
 def is_tronpays_paid(status) -> bool:
     """
     Best-effort detection of successful payment from TronPays check response.
 
-    Since the current docs show the 200-response schema as 'string', this function
-    supports both string and dict responses.
+    Handles: dict (flat or nested under 'data'), string, int (1 = paid).
     """
     if isinstance(status, dict):
-        # Backward-compatible / best-effort checks
-        if status.get("paid") is True:
+        # Unwrap common nested wrapper: {"data": {...}}
+        inner = status.get("data")
+        if isinstance(inner, dict):
+            if is_tronpays_paid(inner):
+                return True
+
+        if status.get("paid") is True or status.get("paid") == 1:
             return True
 
-        for key in ("status", "state", "payment_status"):
+        for key in ("status", "state", "payment_status", "invoice_status",
+                    "transaction_status", "result"):
             value = status.get(key)
-            if isinstance(value, str) and value.strip().lower() in {
-                "paid", "success", "successful", "completed", "done"
-            }:
+            if isinstance(value, str) and value.strip().lower() in _PAID_VALUES:
+                return True
+            if value == 1 and key in ("paid",):
                 return True
 
         return False
 
     if isinstance(status, str):
         normalized = status.strip().lower()
-        return normalized in {
-            "paid", "success", "successful", "completed", "done"
-        }
+        # Handle JSON-encoded string: '"paid"'
+        if normalized.startswith('"') and normalized.endswith('"'):
+            normalized = normalized[1:-1]
+        return normalized in _PAID_VALUES
 
     return False

@@ -246,15 +246,48 @@ def send_payment_to_admins(payment_id):
         types.InlineKeyboardButton("✅ تأیید", callback_data=f"adm:pay:ap:{payment_id}"),
         types.InlineKeyboardButton("❌ رد",    callback_data=f"adm:pay:rj:{payment_id}"),
     )
-    for admin_id in ADMIN_IDS:
+
+    file_id = payment["receipt_file_id"]
+
+    def _send_to_one(target_id):
+        """Send payment notification to a single admin/sub-admin.
+        
+        Strategy:
+        - If there is a receipt photo/document: send it FIRST, then the text
+          with approve/reject buttons (so admin sees photo before the approval request).
+        - If no media: send the text+buttons as a single message.
+        
+        Returns the tracked Message (the one that holds the approve/reject buttons).
+        """
         try:
-            if payment["receipt_file_id"]:
-                msg = bot.send_photo(admin_id, payment["receipt_file_id"], caption=text, reply_markup=kb)
-            else:
-                msg = bot.send_message(admin_id, text, reply_markup=kb)
+            # If there's a receipt image/document, send it FIRST (photo before approval text)
+            if file_id:
+                try:
+                    bot.send_photo(target_id, file_id,
+                                   caption="🖼 رسید کاربر",
+                                   parse_mode="HTML")
+                except Exception:
+                    try:
+                        bot.send_document(target_id, file_id,
+                                          caption="📎 رسید کاربر",
+                                          parse_mode="HTML")
+                    except Exception:
+                        pass  # Media forward failure is non-critical
+            # Then send the full info text with the approve/reject buttons
+            tracked_msg = bot.send_message(
+                target_id, text, reply_markup=kb, parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+            return tracked_msg
+        except Exception as e:
+            print(f"[send_payment_to_admins] FAILED target={target_id} payment={payment_id} error={e}")
+            return None
+
+    for admin_id in ADMIN_IDS:
+        msg = _send_to_one(admin_id)
+        if msg:
             save_payment_admin_message(payment_id, admin_id, msg.message_id)
-        except Exception:
-            pass
+
     # Also notify sub-admins with approve_payments permission
     for row in get_all_admin_users():
         sub_id = row["user_id"]
@@ -263,18 +296,16 @@ def send_payment_to_admins(payment_id):
         perms = json.loads(row["permissions"] or "{}")
         if not (perms.get("full") or perms.get("approve_payments")):
             continue
-        try:
-            if payment["receipt_file_id"]:
-                msg = bot.send_photo(sub_id, payment["receipt_file_id"], caption=text, reply_markup=kb)
-            else:
-                msg = bot.send_message(sub_id, text, reply_markup=kb)
+        msg = _send_to_one(sub_id)
+        if msg:
             save_payment_admin_message(payment_id, sub_id, msg.message_id)
-        except Exception:
-            pass
-    if payment["receipt_file_id"]:
-        send_photo_to_topic("payment_approval", payment["receipt_file_id"], caption=text)
-    else:
-        send_to_topic("payment_approval", text, reply_markup=kb)
+
+    # Group topic: send text first, then photo separately if present
+    grp_msg = send_to_topic("payment_approval", text, reply_markup=kb)
+    if file_id and grp_msg:
+        send_photo_to_topic("payment_approval", file_id, caption="🖼 رسید کاربر")
+    elif file_id:
+        send_photo_to_topic("payment_approval", file_id, caption=text[:1024])
 
 
 # ── Card payment approval / rejection ─────────────────────────────────────────
@@ -402,7 +433,7 @@ def _finish_card_payment_approval_inner(payment_id, admin_note, approved):
             complete_payment(payment_id)
             bot.send_message(user_id, f"✅ واریزی شما تأیید شد.\n\n{esc(admin_note)}")
             deliver_purchase_message(user_id, purchase_id)
-            admin_purchase_notify(payment["payment_method"], get_user(user_id), package_row)
+            admin_purchase_notify(payment["payment_method"], get_user(user_id), package_row, purchase_id=purchase_id)
 
         elif payment["kind"] == "renewal":
             package_id  = payment["package_id"]

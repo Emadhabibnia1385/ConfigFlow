@@ -5,14 +5,14 @@ Runs on the foreign (non-Iran) server alongside bot.py.
 The Iran Worker polls this API to receive jobs and post results.
 
 Run standalone:  python api.py
-Or started automatically by bot.py when worker_api_enabled=1.
+Or started automatically by bot.py when worker_api_enabled=
 """
 
 import os
 import json
 import sqlite3
 import functools
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 from dotenv import load_dotenv
 
@@ -30,14 +30,18 @@ app = Flask(__name__)
 
 
 # ── DB helpers (read-only wrappers, separate connection per request) ───────────
+_TZ_TEHRAN = timezone(timedelta(hours=3, minutes=30))
+
 def _conn():
     c = sqlite3.connect(DB_NAME, check_same_thread=False)
     c.row_factory = sqlite3.Row
+    c.execute("PRAGMA journal_mode = WAL")
+    c.execute("PRAGMA busy_timeout = 5000")
     c.execute("PRAGMA foreign_keys = ON")
     return c
 
 def _now():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(_TZ_TEHRAN).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _get_api_key():
@@ -214,7 +218,8 @@ def _notify_user_job_done(job_id, user_id, result_config, result_link):
         qr_img.save(bio, format="PNG")
         bio.seek(0)
         bio.name = "qrcode.png"
-        b.send_photo(user_id, bio, caption=text, parse_mode="HTML")
+        b.send_message(user_id, text, parse_mode="HTML")
+        b.send_photo(user_id, bio)
     except Exception:
         pass
 
