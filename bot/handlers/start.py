@@ -30,16 +30,9 @@ def start_handler(message):
                         notify_referral_join(referrer_id, uid)
                     except Exception:
                         pass
-                    # In 'invite_only' mode: check & give reward after start
-                    # In 'channel_join' mode: reward is deferred until channel membership confirmed
-                    reward_mode = setting_get("referral_start_reward_mode", "invite_only")
-                    if reward_mode == "invite_only":
-                        try:
-                            from ..ui.notifications import check_and_give_referral_start_reward
-                            check_and_give_referral_start_reward(referrer_id)
-                        except Exception:
-                            pass
-                    # NOTE: In 'channel_join' mode, reward is given in check_channel callback
+                    # Reward is ALWAYS deferred until referee also joins the channel.
+                    # check_and_give_referral_start_reward_after_channel_join is called
+                    # from the check_channel callback once membership is confirmed.
             except (ValueError, Exception):
                 pass
 

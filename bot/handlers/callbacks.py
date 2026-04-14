@@ -4492,8 +4492,6 @@ def _dispatch_callback(call, uid, data):
         pr_count = setting_get("referral_purchase_reward_count", "1")
         sr_type_label = "💰 کیف پول" if sr_type == "wallet" else "📦 کانفیگ"
         pr_type_label = "💰 کیف پول" if pr_type == "wallet" else "📦 کانفیگ"
-        reward_mode = setting_get("referral_start_reward_mode", "invite_only")
-        mode_label = "📨 فقط دعوت به ربات" if reward_mode == "invite_only" else "📢 دعوت + عضویت کانال"
 
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("📸 تنظیم بنر اشتراک‌گذاری", callback_data="adm:ref:banner"))
@@ -4503,7 +4501,7 @@ def _dispatch_callback(call, uid, data):
             types.InlineKeyboardButton(sr_label, callback_data="adm:ref:sr:toggle"),
             types.InlineKeyboardButton("وضعیت هدیه استارت", callback_data="adm:ops:noop"),
         )
-        kb.add(types.InlineKeyboardButton(f"🔑 شرط ریوارد: {mode_label}", callback_data="adm:ref:sr:mode"))
+        kb.add(types.InlineKeyboardButton("🔑 شرط: استارت ربات + عضویت کانال", callback_data="adm:ops:noop"))
         kb.add(types.InlineKeyboardButton(f"📊 تعداد: {sr_count} زیرمجموعه", callback_data="adm:ref:sr:count"))
         kb.add(types.InlineKeyboardButton(f"🎯 نوع هدیه: {sr_type_label}", callback_data="adm:ref:sr:type"))
         if sr_type == "wallet":
@@ -4544,11 +4542,9 @@ def _dispatch_callback(call, uid, data):
     def _ref_settings_text():
         sr_enabled = "✅ فعال" if setting_get("referral_start_reward_enabled", "0") == "1" else "❌ غیرفعال"
         pr_enabled = "✅ فعال" if setting_get("referral_purchase_reward_enabled", "0") == "1" else "❌ غیرفعال"
-        reward_mode = setting_get("referral_start_reward_mode", "invite_only")
-        mode_text = "📨 فقط دعوت به ربات" if reward_mode == "invite_only" else "📢 دعوت + عضویت کانال"
         return (
             "⚙️ <b>تنظیمات زیرمجموعه‌گیری</b>\n\n"
-            f"🔑 <b>شرط ریوارد استارت:</b> {mode_text}\n"
+            "🔑 <b>شرط ریوارد استارت:</b> استارت ربات + عضویت کانال\n"
             f"🎁 هدیه استارت: {sr_enabled}\n"
             f"💸 هدیه خرید زیرمجموعه: {pr_enabled}\n\n"
             "هر بخش را با دکمه‌های زیر تنظیم کنید."
@@ -4607,19 +4603,6 @@ def _dispatch_callback(call, uid, data):
         setting_set("referral_start_reward_enabled", "0" if cur == "1" else "1")
         log_admin_action(uid, f"هدیه استارت زیرمجموعه {'غیرفعال' if cur == '1' else 'فعال'} شد")
         bot.answer_callback_query(call.id)
-        send_or_edit(call, _ref_settings_text(), _ref_settings_kb())
-        return
-
-    if data == "adm:ref:sr:mode":
-        if not admin_has_perm(uid, "settings"):
-            bot.answer_callback_query(call.id, "دسترسی مجاز نیست.", show_alert=True)
-            return
-        cur = setting_get("referral_start_reward_mode", "invite_only")
-        new_val = "channel_join" if cur == "invite_only" else "invite_only"
-        setting_set("referral_start_reward_mode", new_val)
-        label = "دعوت + عضویت کانال" if new_val == "channel_join" else "فقط دعوت به ربات"
-        log_admin_action(uid, f"شرط ریوارد استارت تغییر کرد به: {label}")
-        bot.answer_callback_query(call.id, f"✅ شرط ریوارد: {label}")
         send_or_edit(call, _ref_settings_text(), _ref_settings_kb())
         return
 

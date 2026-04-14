@@ -477,14 +477,11 @@ def check_and_give_referral_start_reward(referrer_id):
 def check_and_give_referral_start_reward_after_channel_join(referee_id):
     """
     Called after invited_user (referee) joins the required channel.
-    Only in 'channel_join' mode: marks channel_joined and gives reward to inviter if eligible.
-    This is the ONLY place reward is given in channel_join mode.
+    Referral is only valid when referee has BOTH started the bot AND joined the channel.
+    Marks channel_joined and gives start reward to inviter if eligible.
     De-duplicated: reward is never given twice for the same referee.
     """
     if setting_get("referral_start_reward_enabled", "0") != "1":
-        return
-    reward_mode = setting_get("referral_start_reward_mode", "invite_only")
-    if reward_mode != "channel_join":
         return
     ref = get_referral_by_referee(referee_id)
     if not ref:
