@@ -476,22 +476,39 @@ def check_and_give_referral_start_reward(referrer_id):
 
 def check_and_give_referral_start_reward_after_channel_join(referee_id):
     """
-    Called after invited_user (referee) joins the required channel.
-    Referral is only valid when referee has BOTH started the bot AND joined the channel.
-    Marks channel_joined and gives start reward to inviter if eligible.
-    De-duplicated: reward is never given twice for the same referee.
+    Called after invited_user (referee) joins the required channel (channel_join mode only).
+    - Marks channel_joined in DB (idempotent via channel_joined flag)
+    - Fires the deferred notify_referral_join log
+    - Gives start reward to referrer if enabled and threshold is reached
     """
-    if setting_get("referral_start_reward_enabled", "0") != "1":
+    # Only applies to channel_join mode
+    reward_mode = setting_get("referral_start_reward_mode", "invite_only")
+    if reward_mode != "channel_join":
         return
+
     ref = get_referral_by_referee(referee_id)
     if not ref:
         return
-    # Idempotency: if reward already given for this referee, skip
-    if ref["start_reward_given"]:
+
+    # Idempotent: if already processed (channel_joined), skip entirely
+    if ref["channel_joined"]:
         return
-    # Mark channel joined for this referee (idempotent)
+
+    # Mark channel joined — this is the single activation point
     mark_referee_channel_joined(referee_id)
     referrer_id = ref["referrer_id"]
+
+    # Fire the deferred join log (was intentionally NOT sent in start.py for this mode)
+    try:
+        notify_referral_join(referrer_id, referee_id)
+    except Exception:
+        pass
+
+    # Give start reward only if enabled
+    if setting_get("referral_start_reward_enabled", "0") != "1":
+        return
+    if ref["start_reward_given"]:
+        return
     required_count = int(setting_get("referral_start_reward_count", "1"))
     # Get all eligible (channel_joined=1, start_reward_given=0) referees for this referrer
     unrewarded = get_unrewarded_start_referrals_channel(referrer_id)
