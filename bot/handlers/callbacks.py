@@ -50,7 +50,11 @@ from ..gateways.swapwallet_crypto import (
 from ..gateways.tronpays_rial import (
     create_tronpays_rial_invoice, check_tronpays_rial_invoice, is_tronpays_paid,
 )
-from ..ui.helpers import send_or_edit, check_channel_membership, channel_lock_message
+from ..ui.helpers import (
+    send_or_edit,
+    check_license_gate, notify_owner_license_fail, send_license_fail_to_target,
+    check_channel_membership, channel_lock_message,
+)
 from ..ui.keyboards import kb_main, kb_admin_panel
 from ..ui.menus import show_main_menu, show_profile, show_support, show_my_configs, show_referral_menu
 from ..ui.notifications import (
@@ -235,6 +239,12 @@ def on_callback(call):
     if data in _PASSTHROUGH_CALLBACKS:
         if data == "check_channel":
             ensure_user(call.from_user)
+            # License gate comes first even on "check" callback
+            if not check_license_gate():
+                notify_owner_license_fail()
+                bot.answer_callback_query(call.id)
+                send_license_fail_to_target(call)
+                return
             if check_channel_membership(uid):
                 bot.answer_callback_query(call.id, "✅ عضویت تأیید شد!")
                 # In channel_join reward mode: give start reward to inviter
@@ -246,7 +256,7 @@ def on_callback(call):
                     pass
                 show_main_menu(call)
             else:
-                bot.answer_callback_query(call.id, "❌ هنوز عضو کانال نشده‌اید.", show_alert=True)
+                bot.answer_callback_query(call.id, "❌ هنوز عضو همه کانال‌ها نشده‌اید.", show_alert=True)
         else:
             try:
                 bot.answer_callback_query(call.id)
@@ -266,6 +276,13 @@ def on_callback(call):
 
     try:
         ensure_user(call.from_user)
+
+        # ── License Gate (blocks everyone when bot is not in license channel) ──
+        if not check_license_gate():
+            notify_owner_license_fail()
+            bot.answer_callback_query(call.id)
+            send_license_fail_to_target(call)
+            return
 
         if not check_channel_membership(uid):
             bot.answer_callback_query(call.id)

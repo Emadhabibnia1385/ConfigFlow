@@ -4,7 +4,10 @@
 """
 from ..db import ensure_user, notify_first_start_if_needed, get_user, setting_get, add_referral, get_referral_by_referee
 from ..helpers import state_clear, is_admin, parse_int
-from ..ui.helpers import check_channel_membership, channel_lock_message
+from ..ui.helpers import (
+    check_license_gate, notify_owner_license_fail, send_license_fail_to_target,
+    check_channel_membership, channel_lock_message,
+)
 from ..ui.menus import show_main_menu
 from ..bot_instance import bot
 
@@ -38,6 +41,12 @@ def start_handler(message):
                     # by already being a member at start time – handled below).
             except (ValueError, Exception):
                 pass
+
+    # ── License Gate (checked for everyone, including admins) ──────────────────
+    if not check_license_gate():
+        notify_owner_license_fail()
+        send_license_fail_to_target(message)
+        return
 
     # Bot status check (before everything else for non-admins)
     if not is_admin(uid):

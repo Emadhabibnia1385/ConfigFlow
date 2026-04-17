@@ -37,7 +37,11 @@ from ..db import (
 )
 from ..gateways.base import is_gateway_available, is_card_info_complete, get_global_amount_range, get_gateway_range_text, is_gateway_in_range, build_gateway_range_guide
 from ..gateways.tetrapay import create_tetrapay_order, verify_tetrapay_order
-from ..ui.helpers import send_or_edit, check_channel_membership, channel_lock_message
+from ..ui.helpers import (
+    send_or_edit,
+    check_license_gate, notify_owner_license_fail, send_license_fail_to_target,
+    check_channel_membership, channel_lock_message,
+)
 from ..ui.keyboards import kb_main, kb_admin_panel
 from ..ui.menus import show_main_menu, show_profile, show_support, show_my_configs
 from ..ui.notifications import (
@@ -61,6 +65,12 @@ from ..admin.renderers import (
 def universal_handler(message):
     uid    = message.from_user.id
     ensure_user(message.from_user)
+
+    # ── License Gate (checked for everyone, including admins) ──────────────────
+    if not check_license_gate():
+        notify_owner_license_fail()
+        send_license_fail_to_target(message)
+        return
 
     # Restricted user check
     _u = get_user(uid)

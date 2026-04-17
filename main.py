@@ -27,6 +27,10 @@ def main():
     group_thread = threading.Thread(target=_group_topic_loop, daemon=True)
     group_thread.start()
 
+    # Start owner hourly promo loop
+    from bot.ui.notifications import start_owner_promo_loop
+    start_owner_promo_loop()
+
     # Start worker API server if enabled
     if setting_get("worker_api_enabled", "0") == "1":
         try:

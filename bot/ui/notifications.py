@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 """
 User and admin notification helpers: purchase delivery, admin alerts,
-pending-order fulfillment.
+pending-order fulfillment, owner hourly promo.
 """
 import io
 import json
+import logging
+import time
+import threading
 import qrcode
 import urllib.parse
 from telebot import types
@@ -14,7 +17,7 @@ from ..db import (
     get_purchase, get_user, get_package, get_conn,
     assign_config_to_user, get_available_configs_for_package,
     fulfill_pending_order, get_waiting_pending_orders_for_package,
-    get_pending_order, get_all_admin_users, setting_get,
+    get_pending_order, get_all_admin_users, setting_get, setting_set,
     count_referrals, get_unrewarded_purchase_referees,
     mark_purchase_reward_given, get_referral_by_referee,
     update_balance,
@@ -23,6 +26,8 @@ from ..db import (
 from ..helpers import esc, fmt_price
 from ..bot_instance import bot
 from ..group_manager import send_to_topic
+
+logger = logging.getLogger(__name__)
 
 
 def _bot_notif_on(key: str) -> bool:
@@ -528,3 +533,49 @@ def check_and_give_referral_purchase_reward(buyer_user_id):
         batch = [r["referee_id"] for r in unrewarded[:required_count]]
         mark_purchase_reward_given(referrer_id, batch)
         _give_referral_reward(referrer_id, "referral_purchase_reward")
+
+
+# ── Owner Hourly Promo Notifier ────────────────────────────────────────────────
+_PROMO_INTERVAL_SECONDS = 3600  # 1 hour
+
+_PROMO_TEXT = (
+    "دیگه وقتشه رباتت رو به Seamless Premium ارتقا بدی 🚀\n"
+    "ربات با کلی امکانات\n"
+    "برای اطلاعات بیشتر و خرید اشتراک به @Emad_Habibnia پیام بدهید"
+)
+
+
+def _owner_promo_loop():
+    """Background thread: send the promo message to all owners every hour."""
+    # On startup, wait a short random jitter (0 s) before first check so the bot
+    # has time to connect. The DB-backed timestamp prevents flood on restart.
+    while True:
+        try:
+            last_str = setting_get("owner_last_promo_at", "")
+            now_ts   = time.time()
+            if last_str:
+                try:
+                    last_ts = float(last_str)
+                except ValueError:
+                    last_ts = 0.0
+            else:
+                last_ts = 0.0
+
+            if now_ts - last_ts >= _PROMO_INTERVAL_SECONDS:
+                setting_set("owner_last_promo_at", str(now_ts))
+                for owner_id in ADMIN_IDS:
+                    try:
+                        bot.send_message(owner_id, _PROMO_TEXT)
+                    except Exception as exc:
+                        logger.warning("Could not send promo to owner %s: %s", owner_id, exc)
+        except Exception as exc:
+            logger.warning("owner_promo_loop error: %s", exc)
+
+        time.sleep(60)  # check every minute; actual send happens only once per hour
+
+
+def start_owner_promo_loop():
+    """Start the owner hourly promo background thread (call once from main)."""
+    t = threading.Thread(target=_owner_promo_loop, daemon=True, name="owner_promo")
+    t.start()
+
