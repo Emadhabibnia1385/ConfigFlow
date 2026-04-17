@@ -1,143 +1,263 @@
 # -*- coding: utf-8 -*-
-import html
+"""
+Core Telegram UI helpers: message editing/sending, bot commands,
+license gate, and multi-channel forced-join enforcement.
+"""
 import json
-import re
-from datetime import datetime
+import logging
+import time
 
 from telebot import types
 
-from .config import ADMIN_IDS, PERM_USER_FULL
-from .bot_instance import bot, USER_STATE, PERSIAN_DIGITS
+from ..db import setting_get
+from ..bot_instance import bot
 
+logger = logging.getLogger(__name__)
 
-# ── Time ───────────────────────────────────────────────────────────────────────
-def now_str():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
-# ── Admin auth ─────────────────────────────────────────────────────────────────
-def is_admin(uid):
-    if uid in ADMIN_IDS:
-        return True
+# ── Bot commands ───────────────────────────────────────────────────────────────
+def set_bot_commands():
     try:
-        from .db import get_admin_user
-        return get_admin_user(uid) is not None
+        bot.set_my_commands([types.BotCommand("start", "شروع ربات")])
     except Exception:
-        return False
+        pass
 
 
-def admin_has_perm(uid, perm):
-    if uid in ADMIN_IDS:
-        return True
+# ── Message send/edit ──────────────────────────────────────────────────────────
+def send_or_edit(call_or_msg, text, reply_markup=None, disable_preview=True):
+    """Edit an existing message (from a callback) or send a new one."""
     try:
-        from .db import get_admin_user
-        row = get_admin_user(uid)
+        if hasattr(call_or_msg, "message"):
+            bot.edit_message_text(
+                text,
+                call_or_msg.message.chat.id,
+                call_or_msg.message.message_id,
+                reply_markup=reply_markup,
+                disable_web_page_preview=disable_preview,
+            )
+        else:
+            bot.send_message(
+                call_or_msg.chat.id, text,
+                reply_markup=reply_markup,
+                disable_web_page_preview=disable_preview
+            )
     except Exception:
-        return False
-    if not row:
-        return False
-    perms = json.loads(row["permissions"] or "{}")
-    if perms.get("full"):
-        return True
-    if perm in PERM_USER_FULL and perms.get("full_users"):
-        return True
-    return bool(perms.get(perm, False))
+        try:
+            chat_id = (
+                call_or_msg.message.chat.id
+                if hasattr(call_or_msg, "message")
+                else call_or_msg.chat.id
+            )
+            bot.send_message(chat_id, text,
+                             reply_markup=reply_markup,
+                             disable_web_page_preview=disable_preview)
+        except Exception:
+            pass
 
 
-# ── Text / number helpers ──────────────────────────────────────────────────────
-def normalize_text_number(v):
-    v = (v or "").translate(PERSIAN_DIGITS)
-    v = v.replace(",", "").replace("٬", "").replace(" ", "")
-    v = v.replace("تومان", "").replace("ریال", "")
-    return v.strip()
+# ── License Gate ───────────────────────────────────────────────────────────────
+# The bot MUST be a member/admin of this channel for the license to be considered active.
+LICENSE_CHANNEL_ID       = -1002261879501
+LICENSE_CHANNEL_USERNAME = "@EmadHabibnia"
+_LICENSE_CACHE_OK_TTL   = 300  # cache successful checks for 5 minutes
+_LICENSE_CACHE_FAIL_TTL = 15   # cache failed checks for only 15 seconds (re-check quickly)
+
+_license_cache: dict = {
+    "ok":              None,   # True/False/None (None = not yet checked)
+    "checked_at":      0.0,
+    "owner_notified":  False,  # reset whenever status flips to False
+}
 
 
-def parse_int(v):
-    c = normalize_text_number(v)
-    if not c or not re.fullmatch(r"\d+", c):
-        return None
-    return int(c)
+def check_license_gate() -> bool:
+    """
+    Return True if the bot is a member/admin of the license channel.
+    Successful results are cached for 5 minutes; failed results only 15 seconds
+    so the bot recovers quickly after being added to the channel.
+    """
+    now = time.time()
+    if _license_cache["ok"] is not None:
+        ttl = _LICENSE_CACHE_OK_TTL if _license_cache["ok"] else _LICENSE_CACHE_FAIL_TTL
+        if now - _license_cache["checked_at"] < ttl:
+            return bool(_license_cache["ok"])
 
-
-def parse_volume(v):
-    """Parse a volume string that may be integer or decimal (e.g. 0.5, 10).
-    Returns float or None. Accepts both . and , as decimal separator."""
-    c = normalize_text_number(v)
-    if not c:
-        return None
-    c = c.replace(",", ".")
     try:
-        num = float(c)
-    except ValueError:
-        return None
-    if num < 0:
-        return None
-    return num
+        me     = bot.get_me()
+        member = bot.get_chat_member(LICENSE_CHANNEL_ID, me.id)
+        ok     = member.status in ("member", "administrator", "creator")
+    except Exception as exc:
+        logger.warning("License gate check failed: %s", exc)
+        ok = False
+
+    prev_ok = _license_cache["ok"]
+    _license_cache["ok"]         = ok
+    _license_cache["checked_at"] = now
+
+    # When transitioning to "not OK" (including first-time fail), reset notify flag
+    if not ok and (prev_ok is None or prev_ok is True):
+        _license_cache["owner_notified"] = False
+
+    return ok
 
 
-def fmt_price(a):
-    return f"{int(a):,}"
+def notify_owner_license_fail():
+    """
+    Send the 'license not active' notification to all owners.
+    Called at most once per failure period (tracked by _license_cache["owner_notified"]).
+    """
+    if _license_cache.get("owner_notified"):
+        return
+    from ..config import ADMIN_IDS
+    for owner_id in ADMIN_IDS:
+        try:
+            bot.send_message(
+                owner_id,
+                "⚠️ <b>لایسنس رایگان ربات شما فعال نیست.</b>\n\n"
+                "برای فعال‌سازی به @Emad_Habibnia پیام دهید.",
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            logger.warning("Could not notify owner %s about license fail: %s", owner_id, exc)
+    _license_cache["owner_notified"] = True
 
 
-def fmt_vol(gb):
-    """Return 'حجم نامحدود' if gb == 0, else '{gb} گیگ'."""
-    if float(gb) == 0:
-        return "حجم نامحدود"
-    # Show as integer if whole number, otherwise show up to 3 decimal places
-    f = float(gb)
-    return f"{int(f)} گیگ" if f == int(f) else f"{f:g} گیگ"
+def send_license_fail_to_target(target):
+    """
+    Reply to a message/callback with the appropriate license-fail text.
+    Owners see the license prompt; regular users see a generic 'not active' message.
+    """
+    from ..config import ADMIN_IDS
+    if hasattr(target, "from_user"):
+        uid     = target.from_user.id
+        chat_id = target.message.chat.id if hasattr(target, "message") and target.message else target.chat.id
+    else:
+        uid     = getattr(target, "from_user", None)
+        chat_id = target.chat.id
+
+    if uid in ADMIN_IDS:
+        text = (
+            "⚠️ <b>لایسنس رایگان ربات شما فعال نیست.</b>\n\n"
+            "برای فعال‌سازی به @Emad_Habibnia پیام دهید."
+        )
+    else:
+        text = (
+            "⛔️ <b>ربات در حال حاضر فعال نیست.</b>\n\n"
+            "بعداً دوباره تلاش کنید."
+        )
+    try:
+        bot.send_message(chat_id, text, parse_mode="HTML")
+    except Exception:
+        pass
 
 
-def fmt_dur(days):
-    """Return 'زمان نامحدود' if days == 0, else '{days} روز'."""
-    return "زمان نامحدود" if int(days) == 0 else f"{days} روز"
+# ── Forced Join (multi-channel) ────────────────────────────────────────────────
+
+def get_forced_channels() -> list:
+    """
+    Return ALL forced channels as a list of dicts:
+        {"name": str, "id": str, "username": str}
+
+    Combines:
+      • legacy `channel_id` setting (single channel, backward compat)
+      • new `forced_channels` setting (JSON array of channel dicts)
+    """
+    channels: list = []
+
+    # Legacy single-channel setting
+    old_cid = setting_get("channel_id", "").strip()
+    if old_cid:
+        channels.append({
+            "name":     "کانال ما",
+            "id":       old_cid,
+            "username": old_cid if old_cid.startswith("@") else "",
+        })
+
+    # New multi-channel JSON setting
+    try:
+        extra = json.loads(setting_get("forced_channels", "[]") or "[]")
+        if isinstance(extra, list):
+            for ch in extra:
+                if isinstance(ch, dict) and (ch.get("id") or ch.get("username")):
+                    channels.append(ch)
+    except Exception:
+        pass
+
+    return channels
 
 
-def display_name(u):
-    n = " ".join(p for p in [u.first_name or "", u.last_name or ""] if p).strip()
-    return n or "ㅤ"
+def _channel_join_url(ch: dict) -> str:
+    """Build a t.me invite URL for a channel dict."""
+    ch_id    = str(ch.get("id")       or "").strip()
+    username = str(ch.get("username") or "").strip()
+    if username.startswith("@"):
+        return f"https://t.me/{username.lstrip('@')}"
+    if ch_id.startswith("@"):
+        return f"https://t.me/{ch_id.lstrip('@')}"
+    if ch_id.startswith("-100"):
+        return f"https://t.me/c/{ch_id[4:]}"
+    return f"https://t.me/{ch_id}"
 
 
-def display_username(u):
-    return f"@{u}" if u else "@ ندارد"
+def _is_member(ch_id_str: str, user_id: int) -> bool:
+    """Check membership of user_id in the given channel id/username string."""
+    try:
+        member = bot.get_chat_member(ch_id_str, user_id)
+        return member.status in ("member", "administrator", "creator")
+    except Exception as exc:
+        logger.debug("Membership check error for channel %s: %s", ch_id_str, exc)
+        return True  # on API error assume OK (don't block on Telegram outage)
 
 
-def safe_support_url(raw):
-    raw = (raw or "").strip()
-    if not raw:
-        return None
-    if raw.startswith("http://") or raw.startswith("https://"):
-        return raw
-    raw = raw.replace("https://", "").replace("http://", "")
-    raw = raw.replace("t.me/", "").replace("telegram.me/", "").replace("@", "").strip()
-    return f"https://t.me/{raw}" if raw else None
+def check_channel_membership(user_id: int) -> bool:
+    """Return True only when the user is a member of ALL forced channels."""
+    for ch in get_forced_channels():
+        ch_id = str(ch.get("id") or ch.get("username", "")).strip()
+        if not ch_id:
+            continue
+        if not _is_member(ch_id, user_id):
+            return False
+    return True
 
 
-def esc(t):
-    return html.escape(str(t or ""))
+def get_unjoined_channels(user_id: int) -> list:
+    """Return only the channels the user has NOT yet joined."""
+    result = []
+    for ch in get_forced_channels():
+        ch_id = str(ch.get("id") or ch.get("username", "")).strip()
+        if not ch_id:
+            continue
+        if not _is_member(ch_id, user_id):
+            result.append(ch)
+    return result
 
 
-# ── State management ───────────────────────────────────────────────────────────
-def state_set(uid, name, **data):
-    USER_STATE[uid] = {"state_name": name, "data": data}
+def channel_lock_message(target, uid: int = None):
+    """
+    Show the forced-join message listing every channel the user hasn't joined yet.
+    Works for both Message objects and CallbackQuery objects.
+    """
+    if uid is None:
+        if hasattr(target, "from_user") and target.from_user:
+            uid = target.from_user.id
+        elif hasattr(target, "message") and target.message and target.message.from_user:
+            uid = target.message.from_user.id
 
+    unjoined = get_unjoined_channels(uid) if uid else get_forced_channels()
+    if not unjoined:
+        # Fallback: list all channels
+        unjoined = get_forced_channels()
 
-def state_clear(uid):
-    USER_STATE.pop(uid, None)
-
-
-def state_name(uid):
-    s = USER_STATE.get(uid)
-    return s["state_name"] if s else None
-
-
-def state_data(uid):
-    s = USER_STATE.get(uid)
-    return s["data"] if s else {}
-
-
-# ── UI shortcut ────────────────────────────────────────────────────────────────
-def back_button(target="main"):
     kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"nav:{target}"))
-    return kb
+    for ch in unjoined:
+        name = ch.get("name") or "کانال"
+        kb.add(types.InlineKeyboardButton(
+            f"📢 عضویت در {name}",
+            url=_channel_join_url(ch),
+        ))
+    kb.add(types.InlineKeyboardButton("✅ عضو شدم، بررسی کن", callback_data="check_channel"))
+
+    send_or_edit(
+        target,
+        "🔒 <b>برای استفاده از ربات، باید در همه کانال‌های اجباری عضو شوید.</b>\n\n"
+        "پس از عضویت، روی «عضو شدم» بزنید.",
+        kb,
+    )
