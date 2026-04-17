@@ -58,7 +58,8 @@ def send_or_edit(call_or_msg, text, reply_markup=None, disable_preview=True):
 # The bot MUST be a member/admin of this channel for the license to be considered active.
 LICENSE_CHANNEL_ID       = -1002261879501
 LICENSE_CHANNEL_USERNAME = "@EmadHabibnia"
-_LICENSE_CACHE_TTL       = 300  # seconds (5 minutes)
+_LICENSE_CACHE_OK_TTL   = 300  # cache successful checks for 5 minutes
+_LICENSE_CACHE_FAIL_TTL = 15   # cache failed checks for only 15 seconds (re-check quickly)
 
 _license_cache: dict = {
     "ok":              None,   # True/False/None (None = not yet checked)
@@ -70,14 +71,14 @@ _license_cache: dict = {
 def check_license_gate() -> bool:
     """
     Return True if the bot is a member/admin of the license channel.
-    Result is cached for _LICENSE_CACHE_TTL seconds to avoid hitting the API on every update.
+    Successful results are cached for 5 minutes; failed results only 15 seconds
+    so the bot recovers quickly after being added to the channel.
     """
     now = time.time()
-    if (
-        _license_cache["ok"] is not None
-        and now - _license_cache["checked_at"] < _LICENSE_CACHE_TTL
-    ):
-        return bool(_license_cache["ok"])
+    if _license_cache["ok"] is not None:
+        ttl = _LICENSE_CACHE_OK_TTL if _license_cache["ok"] else _LICENSE_CACHE_FAIL_TTL
+        if now - _license_cache["checked_at"] < ttl:
+            return bool(_license_cache["ok"])
 
     try:
         me     = bot.get_me()
